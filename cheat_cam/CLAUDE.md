@@ -6,7 +6,7 @@ Read README.md for how it works.
 
 ## Who owns which file (only edit your own file unless the team agrees)
 - Vince: camera setup + setup_desks.py
-- Person 2: detector.py (YOLO models, tiles)
+- Person 2: detector.py (Hugging Face models & Datasets, tiles)
 - Person 3: brain.py + config.py (cheating rules and numbers)
 - Person 4: dashboard.py + demo
 

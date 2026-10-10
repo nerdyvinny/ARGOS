@@ -1,7 +1,7 @@
 # The main program. Run it during the test:
 #
-#   python main.py              (uses SOURCE from config.py = the USB camera)
-#   python main.py test.mp4     (use a video file - great for practicing)
+#   python -m app.main              (uses SOURCE from config.py = the USB camera)
+#   python -m app.main test.mp4     (use a video file - great for practicing)
 #
 # Press Q in the video window to stop.
 
@@ -11,11 +11,11 @@ import csv
 import time
 import webbrowser
 import cv2
-import config
-import camera
-import brain
-import detector
-import dashboard
+from settings import config
+from capture import camera
+from rules import brain
+from vision import detector
+from ui import dashboard
 
 COLORS = {
     "green": (0, 200, 0),
@@ -113,7 +113,7 @@ def main():
     source = get_source()
 
     if not os.path.exists(config.DESKS_FILE):
-        print("No", config.DESKS_FILE, "found. Run: python setup_desks.py")
+        print("No", config.DESKS_FILE, "found. Run: python -m tools.setup_desks")
         return
 
     cap = camera.open_camera(source)

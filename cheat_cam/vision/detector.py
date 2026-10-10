@@ -9,7 +9,7 @@
 
 import numpy as np
 from ultralytics import YOLO
-import config
+from settings import config
 
 pose_model = None
 object_model = None

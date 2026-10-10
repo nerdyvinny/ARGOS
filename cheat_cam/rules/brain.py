@@ -9,7 +9,7 @@
 
 import json
 import statistics
-import config
+from settings import config
 
 
 # ---------------- desks ----------------

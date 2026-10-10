@@ -1,8 +1,8 @@
 # Run this ONCE before the test starts.
 # It grabs one picture from the camera and lets you draw a box on every desk.
 #
-#   python setup_desks.py            (uses SOURCE from config.py)
-#   python setup_desks.py test.mp4   (use a video file instead)
+#   python -m tools.setup_desks            (uses SOURCE from config.py)
+#   python -m tools.setup_desks test.mp4   (use a video file instead)
 #
 # How to draw:
 #   drag a box over a desk (include the chair, where the person sits)
@@ -12,8 +12,8 @@
 import sys
 import json
 import cv2
-import config
-import camera
+from settings import config
+from capture import camera
 
 
 def get_source():

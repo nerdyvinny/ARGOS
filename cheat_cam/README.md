@@ -22,20 +22,22 @@ venv\Scripts\activate.bat
 pip install -r requirements.txt
 ```
 
+Always run the commands below from the `cheat_cam` folder (the models, `desks.json`, `alerts.csv` and `evidence\` are found relative to it).
+
 Got an NVIDIA GPU? Install the GPU version of PyTorch first (pick the command at pytorch.org > Get Started), then run the pip line above. Without a GPU it still works, just slower.
 
 ## Run it
 
 ```
-python setup_desks.py
-python main.py
+python -m tools.setup_desks
+python -m app.main
 ```
 
-- `setup_desks.py` takes one picture and lets you draw a box on every desk (ENTER after each box, ESC when done). Do this once after the camera is in place. If the camera moves, do it again.
-- `main.py` starts watching. Press **Q** in the video window to stop.
-- Practice with a video file instead of the camera: `python setup_desks.py practice.mp4` then `python main.py practice.mp4`
+- `tools/setup_desks.py` takes one picture and lets you draw a box on every desk (ENTER after each box, ESC when done). Do this once after the camera is in place. If the camera moves, do it again.
+- `app/main.py` starts watching. Press **Q** in the video window to stop.
+- Practice with a video file instead of the camera: `python -m tools.setup_desks practice.mp4` then `python -m app.main practice.mp4`
 - We use the wide USB camera (Arducam), which is camera `1`. Camera `0` is the laptop camera, and the code refuses to use it: it checks that the picture is 1920 wide, and the laptop camera can only do 1280.
-- USB camera not found, or the picture is black? Close the Windows Camera app (only one program can use a camera), then unplug the USB camera, plug it back in, and try again. Never switch the Arducam to MJPG: it goes black until it is replugged. If the numbers changed, try `python main.py 2`.
+- USB camera not found, or the picture is black? Close the Windows Camera app (only one program can use a camera), then unplug the USB camera, plug it back in, and try again. Never switch the Arducam to MJPG: it goes black until it is replugged. If the numbers changed, try `python -m app.main 2`.
 
 Output:
 - `alerts.csv` - every alert with time, desk and message
@@ -44,14 +46,25 @@ Output:
 
 ## Files
 
+```
+cheat_cam/
+  app/main.py            puts it all together (start here)
+  capture/camera.py      opens the USB camera (or a video file)
+  vision/detector.py     YOLO models + 360 tiles
+  rules/brain.py         cheating rules and scores
+  ui/dashboard.py        the web page
+  settings/config.py     all the numbers you can tune
+  tools/setup_desks.py   draw the desk boxes, saves desks.json
+```
+
 | File | What it does |
 |---|---|
-| `config.py` | All the numbers you can tune |
-| `setup_desks.py` | Draw the desk boxes, saves `desks.json` |
-| `detector.py` | Runs YOLO: finds people + face points, and phones. Cuts the 360 picture into tiles |
-| `brain.py` | Decides who is cheating (head turn math, phone timer, scores) |
-| `dashboard.py` | The web page |
-| `main.py` | Puts it all together |
+| `settings/config.py` | All the numbers you can tune |
+| `tools/setup_desks.py` | Draw the desk boxes, saves `desks.json` |
+| `vision/detector.py` | Runs YOLO: finds people + face points, and phones. Cuts the 360 picture into tiles |
+| `rules/brain.py` | Decides who is cheating (head turn math, phone timer, scores) |
+| `ui/dashboard.py` | The web page |
+| `app/main.py` | Puts it all together |
 
 ---
 

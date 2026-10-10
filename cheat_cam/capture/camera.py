@@ -5,7 +5,7 @@
 # So after opening a camera we check how wide the picture is. Too small = wrong camera = stop.
 
 import cv2
-import config
+from settings import config
 
 
 def open_camera(source):
@@ -45,7 +45,7 @@ def open_camera(source):
     h, w = frame.shape[:2]
     if w < config.MIN_CAMERA_WIDTH:
         print("Camera", source, "is only", w, "x", h, "- that looks like the LAPTOP camera, not the USB camera.")
-        print("Unplug and replug the USB camera, or try another number: python main.py 2")
+        print("Unplug and replug the USB camera, or try another number: python -m app.main 2")
         cap.release()
         return None
 

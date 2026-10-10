@@ -5,7 +5,7 @@ import os
 import time
 import threading
 from flask import Flask, Response, jsonify, send_from_directory
-import config
+from settings import config
 
 app = Flask(__name__)
 lock = threading.Lock()

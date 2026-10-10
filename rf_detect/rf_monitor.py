@@ -18,7 +18,10 @@ import csv
 import json
 import time
 import numpy as np
-import rf_config as config
+try:
+    from rf_detect import rf_config as config   # python -m rf_detect.rf_monitor   (from the repo root)
+except ImportError:
+    import rf_config as config                  # python rf_monitor.py             (from inside rf_detect)
 
 
 # ---------------- the radio (real or fake) ----------------

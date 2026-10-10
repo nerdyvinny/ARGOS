@@ -120,90 +120,104 @@ def main():
     if cap is None:
         return
 
-    is_file = isinstance(source, str)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps is None or fps <= 1:
-        fps = 30
-    if not is_file:
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # always use the newest picture
-
-    ok, frame = cap.read()
-    if not ok:
-        print("Could not read from the camera/video")
-        return
-
-    h, w = frame.shape[:2]
-    print("Video size:", w, "x", h)
-
-    desk_states = brain.load_desks(w, h)
-    print("Loaded", len(desk_states), "desks")
-
-    detector.load_models()
-    os.makedirs(config.EVIDENCE_FOLDER, exist_ok=True)
-
-    if config.DASHBOARD:
-        dashboard.start()
-        url = "http://localhost:" + str(config.DASHBOARD_PORT)
-        print("Dashboard:", url)
-        if config.OPEN_BROWSER:
-            webbrowser.open(url)
-
-    start = time.time()
-    frame_number = 0
+    desk_states = []     # set early so the summary still works after an early Ctrl+C
     total_alerts = 0
+    try:
+        is_file = isinstance(source, str)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps is None or fps <= 1:
+            fps = 30
+        if not is_file:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # always use the newest picture
 
-    while True:
-        if frame_number > 0:
-            ok, frame = cap.read()
-            if not ok:
-                print("Video ended")
-                break
-        frame_number = frame_number + 1
-
-        # for a video file use the video's own clock, so slow computers still get the right seconds
+        # a video file: skip pictures so we check it at the live camera's speed
+        file_step = 1
         if is_file:
-            now = frame_number / fps
-        else:
-            now = time.time() - start
+            file_step = max(1, round(fps / config.VIDEO_FILE_FPS))
 
-        people, phones = detector.detect(frame)
-        alerts, matches = brain.update_all(desk_states, people, phones, now)
-        drawn = draw(frame, desk_states, matches, phones)
+        ok, frame = cap.read()
+        if not ok:
+            print("Could not read from the camera/video")
+            return
 
-        for a in alerts:
-            desk_state = None
-            for d in desk_states:
-                if d["name"] == a["desk"]:
-                    desk_state = d
-            a["clock"] = time.strftime("%H:%M:%S")
-            a["exam_time"] = exam_time_text(now)
-            a["image"] = save_evidence(drawn, desk_state, a)
-            write_csv(a)
-            total_alerts = total_alerts + 1
-            print("[ALERT]", a["exam_time"], a["message"])
+        h, w = frame.shape[:2]
+        print("Video size:", w, "x", h)
 
-        small = resize_to_width(drawn, 1280)
+        desk_states = brain.load_desks(w, h)
+        print("Loaded", len(desk_states), "desks")
+
+        detector.load_models()
+        os.makedirs(config.EVIDENCE_FOLDER, exist_ok=True)
 
         if config.DASHBOARD:
-            dashboard.add_alerts(alerts)
-            dashboard.set_desks(desk_states)
-            ok_jpg, jpg = cv2.imencode(".jpg", small)
-            if ok_jpg:
-                dashboard.set_frame(jpg.tobytes())
+            dashboard.start()
+            url = "http://localhost:" + str(config.DASHBOARD_PORT)
+            print("Dashboard:", url)
+            if config.OPEN_BROWSER:
+                webbrowser.open(url)
 
+        start = time.time()
+        frame_number = 0
+        total_alerts = 0
+
+        while True:
+            if frame_number > 0:
+                for i in range(file_step - 1):
+                    cap.grab()
+                ok, frame = cap.read()
+                if not ok:
+                    print("Video ended")
+                    break
+            frame_number = frame_number + 1
+
+            # for a video file use the video's own clock, so slow computers still get the right seconds
+            if is_file:
+                now = (1 + (frame_number - 1) * file_step) / fps
+            else:
+                now = time.time() - start
+
+            people, phones = detector.detect(frame)
+            alerts, matches = brain.update_all(desk_states, people, phones, now)
+            drawn = draw(frame, desk_states, matches, phones)
+
+            for a in alerts:
+                desk_state = None
+                for d in desk_states:
+                    if d["name"] == a["desk"]:
+                        desk_state = d
+                a["clock"] = time.strftime("%H:%M:%S")
+                a["exam_time"] = exam_time_text(now)
+                a["image"] = save_evidence(drawn, desk_state, a)
+                write_csv(a)
+                total_alerts = total_alerts + 1
+                print("[ALERT]", a["exam_time"], a["message"])
+
+            small = resize_to_width(drawn, 1280)
+
+            if config.DASHBOARD:
+                dashboard.add_alerts(alerts)
+                dashboard.set_desks(desk_states)
+                ok_jpg, jpg = cv2.imencode(".jpg", small)
+                if ok_jpg:
+                    dashboard.set_frame(jpg.tobytes())
+
+            if config.SHOW_WINDOW:
+                cv2.imshow("Exam Watch (press Q to quit)", small)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    break
+
+            if frame_number % 100 == 0:
+                speed = frame_number / (time.time() - start)
+                print("frames:", frame_number, " speed:", round(speed, 1), "fps")
+
+    except KeyboardInterrupt:
+        print("Stopped (Ctrl+C)")
+    finally:
+        # always let go of the camera, even after Ctrl+C or a crash
+        cap.release()
         if config.SHOW_WINDOW:
-            cv2.imshow("Exam Watch (press Q to quit)", small)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                break
-
-        if frame_number % 100 == 0:
-            speed = frame_number / (time.time() - start)
-            print("frames:", frame_number, " speed:", round(speed, 1), "fps")
-
-    cap.release()
-    if config.SHOW_WINDOW:
-        cv2.destroyAllWindows()
+            cv2.destroyAllWindows()
 
     print("")
     print("===== SUMMARY =====")

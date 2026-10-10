@@ -7,6 +7,10 @@
 # or put a file name like "test_video.mp4"
 SOURCE = 1
 
+# Video files are checked at about the live camera's speed (pictures per second),
+# so the rules act the same on a practice video as in the real room.
+VIDEO_FILE_FPS = 2
+
 # Picture size we ask the USB camera for
 CAMERA_WIDTH = 1920
 CAMERA_HEIGHT = 1080

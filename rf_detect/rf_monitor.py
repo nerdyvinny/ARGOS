@@ -18,10 +18,7 @@ import csv
 import json
 import time
 import numpy as np
-try:
-    from rf_detect import rf_config as config   # python -m rf_detect.rf_monitor   (from the repo root)
-except ImportError:
-    import rf_config as config                  # python rf_monitor.py             (from inside rf_detect)
+import rf_config as config
 
 
 # ---------------- the radio (real or fake) ----------------
@@ -192,31 +189,19 @@ def is_suspicious(row):
     return row["avg_delta"] >= config.THRESHOLD_DB or row["peak_delta"] >= config.PEAK_THRESHOLD_DB
 
 
-def band_status(hits):
-    # hits = True/False for each of the last few sweeps (newest last)
-    # ACTIVE only if it is loud RIGHT NOW and was also loud recently.
-    # If it went quiet again we say "recent" so it does not look like it is still on.
-    if hits[-1] and sum(hits) >= config.CONFIRM_HITS:
-        return "ACTIVE"
-    if hits[-1]:
-        return "maybe"
-    if sum(hits) > 0:
-        return "recent"
-    return "ok"
-
-
 def print_table(rows, history, sweep_number):
     print("")
     print("---- sweep", sweep_number, "at", time.strftime("%H:%M:%S"), "----")
     print("%-14s %-16s %9s %9s %9s  %s" % ("band", "carriers", "level dB", "avg +dB", "peak +dB", "status"))
     for r in rows:
         name = r["band"]["name"]
+        status = "ok"
         if r["avg_delta"] is None:
             status = "(no baseline)"
-        else:
-            status = band_status(history[name])
-            if status == "ACTIVE":
-                status = "ACTIVE  <-- transmitting"
+        elif sum(history[name]) >= config.CONFIRM_HITS:
+            status = "ACTIVE  <-- transmitting"
+        elif history[name][-1]:
+            status = "maybe"
         avg_text = "" if r["avg_delta"] is None else "%+.1f" % r["avg_delta"]
         peak_text = "" if r["peak_delta"] is None else "%+.1f" % r["peak_delta"]
         print("%-14s %-16s %9.1f %9s %9s  %s" % (name, r["band"]["carriers"][:16], r["level"], avg_text, peak_text, status))
@@ -230,7 +215,7 @@ def write_log(rows, history):
             w.writerow(["time", "band", "level_db", "avg_delta_db", "peak_delta_db", "active"])
         for r in rows:
             name = r["band"]["name"]
-            active = band_status(history[name]) == "ACTIVE"
+            active = sum(history[name]) >= config.CONFIRM_HITS
             w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), name, round(r["level"], 2),
                         "" if r["avg_delta"] is None else round(r["avg_delta"], 2),
                         "" if r["peak_delta"] is None else round(r["peak_delta"], 2),
@@ -303,7 +288,7 @@ def main():
                 break
 
         if mode == "monitor":
-            active = [n for n in history if band_status(history[n]) == "ACTIVE"]
+            active = [n for n in history if sum(history[n]) >= config.CONFIRM_HITS]
             print("")
             print("Bands that look ACTIVE right now:", active if active else "none")
     except KeyboardInterrupt:

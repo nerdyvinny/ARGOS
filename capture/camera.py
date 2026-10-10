@@ -24,7 +24,8 @@ def open_camera(source):
     if sys.platform == "win32":
         cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)   # Windows needs DirectShow for the Arducam
     else:
-        cap = cv2.VideoCapture(source)                  # Mac / Linux: the normal way works    if not cap.isOpened():
+        cap = cv2.VideoCapture(source)                  # Mac / Linux: the normal way works
+    if not cap.isOpened():
         print("Could not open camera", source, "- is the USB camera plugged in?")
         print("Also close the Windows Camera app (or Zoom/Teams) - only one program can use a camera at a time.")
         return None

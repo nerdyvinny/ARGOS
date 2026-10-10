@@ -1,0 +1,68 @@
+# Tests for vision/detector.py. No AI model is loaded: the model is replaced by a fake.
+# Run from the repo root:  python -m unittest discover -s tests -v
+
+import unittest
+import numpy as np
+from vision import detector
+
+
+class FakeArray:
+    # looks like a torch tensor: .cpu().numpy()
+    def __init__(self, values):
+        self.values = np.array(values, dtype=float)
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self.values
+
+
+class FakeBoxes:
+    def __init__(self, boxes):
+        self.xyxy = FakeArray(boxes)
+        self.conf = FakeArray([0.9] * len(boxes))
+
+    def __len__(self):
+        return len(self.xyxy.values)
+
+
+class FakeResult:
+    def __init__(self, boxes):
+        self.boxes = FakeBoxes(boxes)
+        self.keypoints = None
+
+
+class FakeModel:
+    # gives back the boxes we planned for each tile (in that tile's own numbers)
+    def __init__(self, boxes_per_tile):
+        self.boxes_per_tile = boxes_per_tile
+
+    def __call__(self, images, **kwargs):
+        return [FakeResult(b) for b in self.boxes_per_tile]
+
+
+class RemoveDoublesTests(unittest.TestCase):
+
+    # B3
+    def test_two_real_people_in_one_tile_are_both_kept(self):
+        saved = detector.pose_model
+        try:
+            detector.pose_model = FakeModel([
+                # tile 0 (starts at x=0): a front-row student, a back-row student mostly
+                # hidden behind them (64% of the smaller box overlaps), and a student at the tile edge
+                [[100, 500, 400, 1000], [180, 420, 320, 640], [500, 0, 700, 300]],
+                # tile 1 (starts at x=544): the same edge student again, cut off by the tile
+                [[0, 0, 156, 300]],
+            ])
+            frame = np.zeros((1000, 1000, 3), dtype=np.uint8)
+            people = detector.find_people([(0, 0, frame), (544, 0, frame)])
+        finally:
+            detector.pose_model = saved
+        boxes = sorted([[int(v) for v in p["box"]] for p in people])
+        # front + back student kept, the edge student counted once
+        self.assertEqual(boxes, [[100, 500, 400, 1000], [180, 420, 320, 640], [500, 0, 700, 300]])
+
+
+if __name__ == "__main__":
+    unittest.main()

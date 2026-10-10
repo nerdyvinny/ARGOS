@@ -20,6 +20,11 @@ def open_camera(source):
             return None
         return cap
 
+    # camera 0 is the laptop camera: never open it, not even for a moment
+    if source == 0:
+        print("Camera 0 is the laptop camera - we never use it. Use the USB camera (1), or try: python -m app.main 2")
+        return None
+
     # a camera number: use DirectShow (Windows' default camera system can't read the Arducam)
     if sys.platform == "win32":
         cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)   # Windows needs DirectShow for the Arducam

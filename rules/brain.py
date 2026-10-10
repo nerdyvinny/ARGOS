@@ -41,6 +41,7 @@ def new_desk_state(name, box):
         "recent_yaws": [],       # last few head angles (for smoothing)
         "yaw_history": [],       # (time, angle) for the last 2 minutes
         "yaw_now": None,
+        "last_yaw_time": None,   # when we last saw the head angle
         "baseline": None,
         "deviation": None,
         "away_start": None,      # when they started looking away
@@ -147,11 +148,15 @@ def match_phones_to_desks(phones, desk_states, matches):
         cx = (b[0] + b[2]) / 2
         cy = (b[1] + b[3]) / 2
         found = None
-        # first: is the phone near a person we know?
+        # first: is the phone near a person we know? (if near 2 people, take the closest one)
+        closest = None
         for name in matches:
-            if point_in_box(cx, cy, grow_box(matches[name]["box"], 0.2)):
-                found = name
-                break
+            pb = matches[name]["box"]
+            if point_in_box(cx, cy, grow_box(pb, 0.2)):
+                dist = (cx - (pb[0] + pb[2]) / 2) ** 2 + (cy - (pb[1] + pb[3]) / 2) ** 2
+                if closest is None or dist < closest:
+                    closest = dist
+                    found = name
         # second: is the phone inside a desk box?
         if found is None:
             for d in desk_states:
@@ -198,6 +203,14 @@ def update_desk(state, person, phone_seen, now):
         state["present"] = True
         yaw = head_yaw(person["points"])
         if yaw is not None:
+            # the face was hidden for a while (head down writing): the old angles and the
+            # look-away timer are out of date, so start fresh
+            if state["last_yaw_time"] is not None and now - state["last_yaw_time"] > config.LOOK_AWAY_SECONDS:
+                state["recent_yaws"] = []
+                state["away_start"] = None
+                state["long_alerted"] = False
+            state["last_yaw_time"] = now
+
             state["recent_yaws"].append(yaw)
             if len(state["recent_yaws"]) > config.YAW_SMOOTH_FRAMES:
                 state["recent_yaws"].pop(0)
@@ -226,10 +239,11 @@ def update_desk(state, person, phone_seen, now):
 
                     if how_long >= config.LONG_LOOK_SECONDS and not state["long_alerted"]:
                         side = "left" if dev < 0 else "right"
-                        state["long_alerted"] = True
+                        # only mark it as alerted when the alert really went out (not blocked by the cooldown)
                         if make_alert(state, "long_look",
                                       state["name"] + " stared " + side + " for " + str(round(how_long, 1)) + "s",
                                       now, alerts):
+                            state["long_alerted"] = True
                             state["total_long_looks"] = state["total_long_looks"] + 1
                 else:
                     state["away_start"] = None

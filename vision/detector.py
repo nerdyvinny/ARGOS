@@ -72,13 +72,14 @@ def overlap_of_smaller(a, b):
 
 def remove_doubles(things):
     # The same person can show up in 2 tiles (because of the overlap).
-    # Keep the biggest box and throw away boxes that are mostly inside it.
+    # Keep the biggest box and throw away boxes from ANOTHER tile that are mostly inside it.
+    # (Boxes from the same tile are different people, e.g. a student sitting behind another.)
     things = sorted(things, key=lambda t: box_area(t["box"]), reverse=True)
     kept = []
     for t in things:
         is_double = False
         for k in kept:
-            if overlap_of_smaller(t["box"], k["box"]) > 0.6:
+            if t["tile"] != k["tile"] and overlap_of_smaller(t["box"], k["box"]) > 0.6:
                 is_double = True
                 break
         if not is_double:
@@ -116,7 +117,7 @@ def find_people(tiles):
                     else:
                         points.append([float(p[0] + ox), float(p[1] + oy), 1.0])
 
-            people.append({"box": box, "conf": float(confs[j]), "points": points})
+            people.append({"box": box, "conf": float(confs[j]), "points": points, "tile": i})
 
     return remove_doubles(people)
 
@@ -139,7 +140,7 @@ def find_phones(tiles):
         for j in range(len(boxes)):
             b = boxes[j]
             box = [float(b[0] + ox), float(b[1] + oy), float(b[2] + ox), float(b[3] + oy)]
-            phones.append({"box": box, "conf": float(confs[j])})
+            phones.append({"box": box, "conf": float(confs[j]), "tile": i})
 
     return remove_doubles(phones)
 

@@ -13,7 +13,7 @@
 #       step 2: ViTPose looks at each person box and finds the 17 body points
 #   "yolo" = the old Ultralytics YOLO11 models (backup if Hugging Face is slow)
 #
-# Smartwatch check (Hugging Face only, turn on with WATCH_CHECK = True in config.py):
+# Smartwatch check (Hugging Face only, turn off with WATCH_CHECK = False in config.py):
 #   COCO has no "smartwatch", so we cut a small square around each wrist point
 #   and ask CLIP "is this a wrist with a smartwatch or a bare wrist?".
 #   A watch is added to the phones list with "label": "smartwatch",
@@ -40,13 +40,17 @@ HF_POSE_MODEL = getattr(config, "HF_POSE_MODEL", "usyd-community/vitpose-base-si
 BACKEND = getattr(config, "DETECTOR_BACKEND", "huggingface")
 
 # smartwatch check
-WATCH_CHECK = getattr(config, "WATCH_CHECK", False)   # off by default to keep it fast
+WATCH_CHECK = getattr(config, "WATCH_CHECK", True)
 HF_WATCH_MODEL = getattr(config, "HF_WATCH_MODEL", "openai/clip-vit-base-patch32")
-WATCH_CONFIDENCE = getattr(config, "WATCH_CONFIDENCE", 0.6)   # how sure CLIP has to be
+WATCH_CONFIDENCE = getattr(config, "WATCH_CONFIDENCE", 0.5)   # how sure CLIP has to be
 WATCH_BOX_SIZE = getattr(config, "WATCH_BOX_SIZE", 0.35)      # wrist square = this much of the person box width
-# what CLIP chooses between. The first one is the "watch" answer.
+# what CLIP chooses between. The first WATCH_YES_COUNT texts all mean "watch":
+# we add them up, so a watch seen from the side or only its band still counts.
 WATCH_TEXTS = [
     "a photo of a wrist wearing a smartwatch",
+    "a photo of a smartwatch seen from the side",
+    "a photo of a watch band on a wrist",
+    "a photo of the back of a wrist with a watch",
     "a photo of a bare wrist",
     "a photo of a wrist in a sleeve",
     "a photo of a hand holding a pen",
@@ -79,6 +83,8 @@ EAR_TEXTS = [
 ]
 EAR_LABELS = ["earbuds", "headphones"]
 FACE_POINTS = [0, 1, 2, 3, 4]   # nose, eyes, ears
+
+WATCH_YES_COUNT = 4
 
 LEFT_WRIST = 9
 RIGHT_WRIST = 10
@@ -236,6 +242,21 @@ def remove_doubles(things):
     return kept
 
 
+def remove_doubles_per_label(things):
+    # Like remove_doubles, but only compares boxes with the same label.
+    # So a phone held next to your headphones is NOT thrown away as a "double".
+    groups = {}
+    for t in things:
+        label = t.get("label", "phone")
+        if label not in groups:
+            groups[label] = []
+        groups[label].append(t)
+    kept = []
+    for label in groups:
+        kept = kept + remove_doubles(groups[label])
+    return kept
+
+
 # ---------------- Hugging Face version ----------------
 
 def hf_find_people_and_phones(tiles):
@@ -291,7 +312,7 @@ def hf_find_people_and_phones(tiles):
         pose_tile_ids.append(i)
 
     if len(pose_images) == 0:
-        return people, remove_doubles(phones)
+        return people, remove_doubles_per_label(phones)
 
     inputs = hf_pose_processor(pose_images, boxes=pose_boxes, return_tensors="pt").to(hf_device)
     with torch.inference_mode():
@@ -320,7 +341,7 @@ def hf_find_people_and_phones(tiles):
         phones = phones + hf_find_watches(tiles, people)
     if EAR_CHECK:
         phones = phones + hf_find_ear_devices(tiles, people)
-    return people, remove_doubles(phones)
+    return people, remove_doubles_per_label(phones)
 
 
 def hf_find_ear_devices(tiles, people):
@@ -446,7 +467,7 @@ def hf_find_watches(tiles, people):
     probs = outputs.logits_per_image.softmax(dim=1)   # one row per wrist, one column per text
 
     for i in range(len(crops)):
-        watch_prob = float(probs[i][0])
+        watch_prob = float(probs[i][:WATCH_YES_COUNT].sum())
         if watch_prob >= WATCH_CONFIDENCE:
             watches.append({"box": crop_boxes[i], "conf": watch_prob, "label": "smartwatch"})
     return watches

@@ -3,24 +3,129 @@
 #   people = list of {"box": [x1,y1,x2,y2], "conf": 0.9, "points": [[x,y,conf], ... 17 points]}
 #   phones = list of {"box": [x1,y1,x2,y2], "conf": 0.5}
 #
-# Body points (from YOLO pose, COCO order):
+# Body points (COCO order, same for both model types):
 #   0 nose, 1 left eye, 2 right eye, 3 left ear, 4 right ear,
 #   5 left shoulder, 6 right shoulder, ... 9 left wrist, 10 right wrist ...
+#
+# Two ways to run (pick with DETECTOR_BACKEND in config.py, default "huggingface"):
+#   "huggingface" = models from the Hugging Face Hub (transformers library)
+#       step 1: RT-DETR finds people AND phones in one go (trained on COCO)
+#       step 2: ViTPose looks at each person box and finds the 17 body points
+#   "yolo" = the old Ultralytics YOLO11 models (backup if Hugging Face is slow)
+#
+# Smartwatch check (Hugging Face only, turn on with WATCH_CHECK = True in config.py):
+#   COCO has no "smartwatch", so we cut a small square around each wrist point
+#   and ask CLIP "is this a wrist with a smartwatch or a bare wrist?".
+#   A watch is added to the phones list with "label": "smartwatch",
+#   so brain.py treats it like a phone (same timer and alert).
 
 import numpy as np
-from ultralytics import YOLO
+from PIL import Image
 import config
 
+# Hugging Face models. They download by themselves the first time.
+# You can change these in config.py (same names) without touching this file.
+HF_OBJECT_MODEL = getattr(config, "HF_OBJECT_MODEL", "PekingU/rtdetr_r18vd_coco_o365")
+HF_POSE_MODEL = getattr(config, "HF_POSE_MODEL", "usyd-community/vitpose-base-simple")
+BACKEND = getattr(config, "DETECTOR_BACKEND", "huggingface")
+
+# smartwatch check
+WATCH_CHECK = getattr(config, "WATCH_CHECK", False)   # off by default to keep it fast
+HF_WATCH_MODEL = getattr(config, "HF_WATCH_MODEL", "openai/clip-vit-base-patch32")
+WATCH_CONFIDENCE = getattr(config, "WATCH_CONFIDENCE", 0.6)   # how sure CLIP has to be
+WATCH_BOX_SIZE = getattr(config, "WATCH_BOX_SIZE", 0.35)      # wrist square = this much of the person box width
+# what CLIP chooses between. The first one is the "watch" answer.
+WATCH_TEXTS = [
+    "a photo of a wrist wearing a smartwatch",
+    "a photo of a bare wrist",
+    "a photo of a wrist in a sleeve",
+    "a photo of a hand holding a pen",
+]
+LEFT_WRIST = 9
+RIGHT_WRIST = 10
+
+# names the object model uses for the things we want
+PERSON_NAME = "person"
+PHONE_NAME = "cell phone"
+
+# YOLO models (only used when BACKEND = "yolo")
 pose_model = None
 object_model = None
 
+# Hugging Face models (only used when BACKEND = "huggingface")
+hf_device = "cpu"
+hf_object_processor = None
+hf_object_model = None
+hf_pose_processor = None
+hf_pose_model = None
+person_label = None
+phone_label = None
+hf_watch_processor = None
+hf_watch_model = None
+
 
 def load_models():
-    global pose_model, object_model
     print("Loading AI models (first time it downloads them)...")
+    if BACKEND == "yolo":
+        load_yolo_models()
+    else:
+        load_hf_models()
+    print("Models loaded")
+
+
+def load_yolo_models():
+    global pose_model, object_model
+    from ultralytics import YOLO
     pose_model = YOLO(config.POSE_MODEL)
     object_model = YOLO(config.OBJECT_MODEL)
-    print("Models loaded")
+
+
+def load_hf_models():
+    global hf_device, hf_object_processor, hf_object_model, hf_pose_processor, hf_pose_model
+    global person_label, phone_label, hf_watch_processor, hf_watch_model
+    import os
+    # on a Mac, if the graphics chip can't do one step, let it do that step on the cpu instead of crashing
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    import torch
+    from transformers import AutoProcessor, RTDetrForObjectDetection, VitPoseForPoseEstimation
+    from transformers import CLIPModel
+
+    if torch.cuda.is_available():
+        hf_device = "cuda"   # NVIDIA graphics card
+    elif torch.backends.mps.is_available():
+        hf_device = "mps"    # Mac with an M1/M2/M3/M4 chip (much faster than cpu)
+    else:
+        hf_device = "cpu"
+    print("Using", hf_device)
+
+    print("Object model:", HF_OBJECT_MODEL)
+    hf_object_processor = AutoProcessor.from_pretrained(HF_OBJECT_MODEL)
+    hf_object_model = RTDetrForObjectDetection.from_pretrained(HF_OBJECT_MODEL).to(hf_device)
+    hf_object_model.eval()
+
+    print("Pose model:", HF_POSE_MODEL)
+    hf_pose_processor = AutoProcessor.from_pretrained(HF_POSE_MODEL)
+    hf_pose_model = VitPoseForPoseEstimation.from_pretrained(HF_POSE_MODEL).to(hf_device)
+    hf_pose_model.eval()
+
+    if WATCH_CHECK:
+        print("Watch model:", HF_WATCH_MODEL)
+        hf_watch_processor = AutoProcessor.from_pretrained(HF_WATCH_MODEL)
+        hf_watch_model = CLIPModel.from_pretrained(HF_WATCH_MODEL).to(hf_device)
+        hf_watch_model.eval()
+
+    # find the label numbers for "person" and "cell phone"
+    person_label = find_label(hf_object_model, PERSON_NAME)
+    phone_label = find_label(hf_object_model, PHONE_NAME)
+    if person_label is None or phone_label is None:
+        print("WARNING: this object model does not know 'person' or 'cell phone'. Use a COCO model.")
+
+
+def find_label(model, name):
+    for label_id, label_name in model.config.id2label.items():
+        if label_name.lower() == name:
+            return int(label_id)
+    return None
 
 
 def make_tiles(frame):
@@ -34,8 +139,14 @@ def make_tiles(frame):
 
     band = frame[top:bottom]
 
+    # Tiles only help for a really wide 360 picture.
+    # A normal camera picture (the band is less than 3x wider than tall) is checked in one go,
+    # otherwise we'd run the AI 3 times on the same picture for nothing.
+    band_h = bottom - top
+    one_tile = config.TILES <= 1 or w < 3 * band_h
+
     tiles = []
-    if config.TILES <= 1:
+    if one_tile:
         tiles.append((0, top, np.ascontiguousarray(band)))
         return tiles
 
@@ -85,6 +196,147 @@ def remove_doubles(things):
             kept.append(t)
     return kept
 
+
+# ---------------- Hugging Face version ----------------
+
+def hf_find_people_and_phones(tiles):
+    import torch
+
+    # OpenCV pictures are BGR, Hugging Face wants RGB
+    images = []
+    for t in tiles:
+        rgb = t[2][:, :, ::-1]
+        images.append(Image.fromarray(np.ascontiguousarray(rgb)))
+
+    # step 1: find people and phones in every tile (one batch)
+    inputs = hf_object_processor(images=images, return_tensors="pt").to(hf_device)
+    with torch.inference_mode():
+        outputs = hf_object_model(**inputs)
+    sizes = [(img.height, img.width) for img in images]
+    lowest = min(config.PERSON_CONFIDENCE, config.PHONE_CONFIDENCE)
+    results = hf_object_processor.post_process_object_detection(outputs, target_sizes=sizes, threshold=lowest)
+
+    people = []
+    phones = []
+    # for step 2: per tile, the person boxes inside that tile
+    tile_person_boxes = []
+    tile_person_confs = []
+    for i in range(len(results)):
+        r = results[i]
+        ox = tiles[i][0]
+        oy = tiles[i][1]
+        boxes_here = []
+        confs_here = []
+        for score, label, b in zip(r["scores"].tolist(), r["labels"].tolist(), r["boxes"].tolist()):
+            if label == phone_label and score >= config.PHONE_CONFIDENCE:
+                box = [b[0] + ox, b[1] + oy, b[2] + ox, b[3] + oy]
+                phones.append({"box": box, "conf": float(score)})
+            elif label == person_label and score >= config.PERSON_CONFIDENCE:
+                boxes_here.append(b)
+                confs_here.append(float(score))
+        tile_person_boxes.append(boxes_here)
+        tile_person_confs.append(confs_here)
+
+    # step 2: body points for every person (one batch, only tiles that have people)
+    pose_images = []
+    pose_boxes = []      # ViTPose wants [x, y, width, height]
+    pose_tile_ids = []
+    for i in range(len(images)):
+        if len(tile_person_boxes[i]) == 0:
+            continue
+        xywh = []
+        for b in tile_person_boxes[i]:
+            xywh.append([b[0], b[1], b[2] - b[0], b[3] - b[1]])
+        pose_images.append(images[i])
+        pose_boxes.append(xywh)
+        pose_tile_ids.append(i)
+
+    if len(pose_images) == 0:
+        return people, remove_doubles(phones)
+
+    inputs = hf_pose_processor(pose_images, boxes=pose_boxes, return_tensors="pt").to(hf_device)
+    with torch.inference_mode():
+        outputs = hf_pose_model(**inputs)
+    pose_results = hf_pose_processor.post_process_pose_estimation(outputs, boxes=pose_boxes)
+
+    for k in range(len(pose_results)):
+        i = pose_tile_ids[k]
+        ox = tiles[i][0]
+        oy = tiles[i][1]
+        for j in range(len(pose_results[k])):
+            person = pose_results[k][j]
+            b = tile_person_boxes[i][j]
+            box = [b[0] + ox, b[1] + oy, b[2] + ox, b[3] + oy]
+            points = []
+            xy = person["keypoints"].tolist()
+            conf = person["scores"].tolist()
+            for p in range(len(xy)):
+                points.append([float(xy[p][0] + ox), float(xy[p][1] + oy), float(conf[p])])
+            people.append({"box": box, "conf": tile_person_confs[i][j], "points": points})
+
+    people = remove_doubles(people)
+    if WATCH_CHECK:
+        phones = phones + hf_find_watches(tiles, people)
+    return people, remove_doubles(phones)
+
+
+def hf_find_watches(tiles, people):
+    import torch
+
+    crops = []
+    crop_boxes = []
+    for person in people:
+        b = person["box"]
+        side = (b[2] - b[0]) * WATCH_BOX_SIZE
+        if side < 16:
+            continue   # person too tiny, can't see a watch anyway
+        for k in [LEFT_WRIST, RIGHT_WRIST]:
+            if k >= len(person["points"]):
+                continue
+            x, y, c = person["points"][k]
+            if c < config.KEYPOINT_CONFIDENCE:
+                continue
+            crop_box = [x - side / 2, y - side / 2, x + side / 2, y + side / 2]
+            piece = cut_from_tiles(tiles, crop_box)
+            if piece is None:
+                continue
+            rgb = np.ascontiguousarray(piece[:, :, ::-1])
+            crops.append(Image.fromarray(rgb))
+            crop_boxes.append(crop_box)
+
+    watches = []
+    if len(crops) == 0:
+        return watches
+
+    inputs = hf_watch_processor(text=WATCH_TEXTS, images=crops, return_tensors="pt", padding=True).to(hf_device)
+    with torch.inference_mode():
+        outputs = hf_watch_model(**inputs)
+    probs = outputs.logits_per_image.softmax(dim=1)   # one row per wrist, one column per text
+
+    for i in range(len(crops)):
+        watch_prob = float(probs[i][0])
+        if watch_prob >= WATCH_CONFIDENCE:
+            watches.append({"box": crop_boxes[i], "conf": watch_prob, "label": "smartwatch"})
+    return watches
+
+
+def cut_from_tiles(tiles, box):
+    # find a tile that has this box inside it and cut the piece out
+    for ox, oy, piece in tiles:
+        h, w = piece.shape[:2]
+        x1 = int(box[0] - ox)
+        y1 = int(box[1] - oy)
+        x2 = int(box[2] - ox)
+        y2 = int(box[3] - oy)
+        if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
+            continue
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            continue
+        return piece[y1:y2, x1:x2]
+    return None
+
+
+# ---------------- YOLO version (backup) ----------------
 
 def find_people(tiles):
     images = [t[2] for t in tiles]
@@ -146,6 +398,9 @@ def find_phones(tiles):
 
 def detect(frame):
     tiles = make_tiles(frame)
-    people = find_people(tiles)
-    phones = find_phones(tiles)
+    if BACKEND == "yolo":
+        people = find_people(tiles)
+        phones = find_phones(tiles)
+    else:
+        people, phones = hf_find_people_and_phones(tiles)
     return people, phones

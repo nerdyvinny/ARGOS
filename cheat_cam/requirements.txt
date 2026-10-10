@@ -1,3 +1,8 @@
+transformers>=4.49
+torch
+torchvision
+pillow
+scipy
 ultralytics>=8.3.0
 opencv-python
 flask

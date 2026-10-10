@@ -151,3 +151,166 @@ def make_baseline(radio, steps):
     with open(config.BASELINE_FILE, "w") as f:
         json.dump(baseline, f, indent=2)
     print("Saved", config.BASELINE_FILE, "with", len(baseline), "frequency windows")
+
+
+def load_baseline():
+    if not os.path.exists(config.BASELINE_FILE):
+        return None
+    with open(config.BASELINE_FILE) as f:
+        return json.load(f)
+
+
+# ---------------- reporting ----------------
+
+def band_readings(bands, steps, now, baseline):
+    # For each band find the window that is most above normal.
+    rows = []
+    for b in bands:
+        keys = [step_key(s) for s in steps if s["band"] == b["name"]]
+        avg_delta = None
+        peak_delta = None
+        level = None
+        for k in keys:
+            if k not in now:
+                continue
+            if level is None or now[k]["avg"] > level:
+                level = now[k]["avg"]
+            if baseline is not None and k in baseline:
+                d_avg = now[k]["avg"] - baseline[k]["avg"]
+                d_peak = now[k]["peak"] - baseline[k]["peak"]
+                if avg_delta is None or d_avg > avg_delta:
+                    avg_delta = d_avg
+                if peak_delta is None or d_peak > peak_delta:
+                    peak_delta = d_peak
+        rows.append({"band": b, "level": level, "avg_delta": avg_delta, "peak_delta": peak_delta})
+    return rows
+
+
+def is_suspicious(row):
+    if row["avg_delta"] is None:
+        return False
+    return row["avg_delta"] >= config.THRESHOLD_DB or row["peak_delta"] >= config.PEAK_THRESHOLD_DB
+
+
+def band_status(hits):
+    # hits = True/False for each of the last few sweeps (newest last)
+    # ACTIVE only if it is loud RIGHT NOW and was also loud recently.
+    # If it went quiet again we say "recent" so it does not look like it is still on.
+    if hits[-1] and sum(hits) >= config.CONFIRM_HITS:
+        return "ACTIVE"
+    if hits[-1]:
+        return "maybe"
+    if sum(hits) > 0:
+        return "recent"
+    return "ok"
+
+
+def print_table(rows, history, sweep_number):
+    print("")
+    print("---- sweep", sweep_number, "at", time.strftime("%H:%M:%S"), "----")
+    print("%-14s %-16s %9s %9s %9s  %s" % ("band", "carriers", "level dB", "avg +dB", "peak +dB", "status"))
+    for r in rows:
+        name = r["band"]["name"]
+        if r["avg_delta"] is None:
+            status = "(no baseline)"
+        else:
+            status = band_status(history[name])
+            if status == "ACTIVE":
+                status = "ACTIVE  <-- transmitting"
+        avg_text = "" if r["avg_delta"] is None else "%+.1f" % r["avg_delta"]
+        peak_text = "" if r["peak_delta"] is None else "%+.1f" % r["peak_delta"]
+        print("%-14s %-16s %9.1f %9s %9s  %s" % (name, r["band"]["carriers"][:16], r["level"], avg_text, peak_text, status))
+
+
+def write_log(rows, history):
+    new_file = not os.path.exists(config.LOG_FILE)
+    with open(config.LOG_FILE, "a", newline="") as f:
+        w = csv.writer(f)
+        if new_file:
+            w.writerow(["time", "band", "level_db", "avg_delta_db", "peak_delta_db", "active"])
+        for r in rows:
+            name = r["band"]["name"]
+            active = band_status(history[name]) == "ACTIVE"
+            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), name, round(r["level"], 2),
+                        "" if r["avg_delta"] is None else round(r["avg_delta"], 2),
+                        "" if r["peak_delta"] is None else round(r["peak_delta"], 2),
+                        int(active)])
+
+
+# ---------------- main ----------------
+
+def get_options():
+    args = sys.argv[1:]
+    mode = args[0] if args and not args[0].startswith("--") else "monitor"
+    simulate = "--simulate" in args
+    sweeps = None
+    if "--sweeps" in args:
+        sweeps = int(args[args.index("--sweeps") + 1])
+    return mode, simulate, sweeps
+
+
+def main():
+    mode, simulate, max_sweeps = get_options()
+    if mode not in ("scan", "baseline", "monitor"):
+        print("Use: python rf_monitor.py scan | baseline | monitor   [--simulate] [--sweeps N]")
+        return
+
+    bands = [b for b in config.BANDS if b["enabled"]]
+    steps = make_steps(bands)
+    print("Watching", len(bands), "bands in", len(steps), "frequency windows")
+
+    if simulate:
+        radio = FakeRadio()
+        print("(SIMULATION: fake radio, no hardware)")
+    else:
+        try:
+            radio = RealRadio()
+        except Exception as e:
+            print("Could not open the RTL-SDR:", e)
+            print("Is SDR++ still open? Is pyrtlsdr installed? See README.md")
+            return
+
+    try:
+        if mode == "baseline":
+            make_baseline(radio, steps)
+            return
+
+        baseline = None
+        if mode == "monitor":
+            baseline = load_baseline()
+            if baseline is None:
+                print("No", config.BASELINE_FILE, "yet. Run: python rf_monitor.py baseline  (in the EMPTY room)")
+                return
+
+        history = {}
+        for b in bands:
+            history[b["name"]] = [False] * config.CONFIRM_WINDOW
+
+        sweep_number = 0
+        print("Press Ctrl+C to stop")
+        while max_sweeps is None or sweep_number < max_sweeps:
+            sweep_number = sweep_number + 1
+            if simulate and mode == "monitor" and sweep_number == 4:
+                radio.phone_on = True            # test only: a fake phone starts transmitting
+            rows = band_readings(bands, steps, sweep(radio, steps), baseline)
+            for r in rows:
+                name = r["band"]["name"]
+                history[name] = history[name][1:] + [is_suspicious(r)]
+            print_table(rows, history, sweep_number)
+            if mode == "monitor":
+                write_log(rows, history)
+            if mode == "scan":
+                break
+
+        if mode == "monitor":
+            active = [n for n in history if band_status(history[n]) == "ACTIVE"]
+            print("")
+            print("Bands that look ACTIVE right now:", active if active else "none")
+    except KeyboardInterrupt:
+        print("\nStopped")
+    finally:
+        radio.close()
+
+
+if __name__ == "__main__":
+    main()

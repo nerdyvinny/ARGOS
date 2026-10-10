@@ -10,6 +10,7 @@ import sys
 import time
 import tempfile
 import cv2
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -18,6 +19,14 @@ from capture import camera
 from rules import brain
 from vision import detector
 from app import main as app_main
+
+
+def p5_fps(stamps):
+    # 5th percentile speed = 1 / (95th percentile gap between pictures)
+    gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+    if not gaps:
+        return None
+    return round(1 / float(np.percentile(gaps, 95)), 2)
 
 
 def main():
@@ -33,6 +42,7 @@ def main():
     os.makedirs(config.EVIDENCE_FOLDER)
 
     counts = {"shown": 0, "checked": 0}
+    stamps = {"shown": [], "checked": []}
     real_show = app_main.show
     real_update_all = brain.update_all
     deadline = [None]
@@ -41,6 +51,7 @@ def main():
         if deadline[0] is None:
             deadline[0] = time.time() + seconds
         counts["shown"] = counts["shown"] + 1
+        stamps["shown"].append(time.time())
         if real_show(drawn, desk_states):
             return True
         return time.time() > deadline[0]
@@ -48,6 +59,7 @@ def main():
     def counting_update_all(desk_states, people, phones, now):
         if deadline[0] is not None and time.time() <= deadline[0]:
             counts["checked"] = counts["checked"] + 1
+            stamps["checked"].append(time.time())
         return real_update_all(desk_states, people, phones, now)
 
     app_main.show = counting_show
@@ -71,8 +83,8 @@ def main():
         cap.release()
         cv2.destroyAllWindows()
 
-    print("video FPS (screen/dashboard):", round(counts["shown"] / seconds, 2))
-    print("AI FPS (processed):", round(counts["checked"] / seconds, 2))
+    print("video FPS (screen/dashboard):", round(counts["shown"] / seconds, 2), "| p5", p5_fps(stamps["shown"]))
+    print("AI FPS (processed):", round(counts["checked"] / seconds, 2), "| p5", p5_fps(stamps["checked"]))
     print("alerts:", alert_counts["alerts"])
 
 

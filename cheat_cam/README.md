@@ -34,7 +34,8 @@ python main.py
 - `setup_desks.py` takes one picture and lets you draw a box on every desk (ENTER after each box, ESC when done). Do this once after the camera is in place. If the camera moves, do it again.
 - `main.py` starts watching. Press **Q** in the video window to stop.
 - Practice with a video file instead of the camera: `python setup_desks.py practice.mp4` then `python main.py practice.mp4`
-- Camera not found? Your laptop webcam is probably `0`. Try `python main.py 1` or `python main.py 2`.
+- We use the wide USB camera (Arducam), which is camera `1`. Camera `0` is the laptop camera, and the code refuses to use it: it checks that the picture is 1920 wide, and the laptop camera can only do 1280.
+- USB camera not found, or the picture is black? Close the Windows Camera app (only one program can use a camera), then unplug the USB camera, plug it back in, and try again. Never switch the Arducam to MJPG: it goes black until it is replugged. If the numbers changed, try `python main.py 2`.
 
 Output:
 - `alerts.csv` - every alert with time, desk and message
@@ -64,7 +65,7 @@ Output:
 **2. How do we catch phones?**
 - *Idea A:* "head down for a long time" = phone. *Problem:* writing on the test also means head down. Tons of false alarms.
 - *Idea B:* YOLO already knows "cell phone" (COCO class 67).
-- **Decision: B.** Phone must show up 3 times in 2 seconds so one random flicker doesn't count. We lowered the confidence to 0.25 because phones are small.
+- **Decision: B.** Phone must show up 3 times in 4 seconds (we only get about 2 pictures a second on a laptop) so one random flicker doesn't count. We lowered the confidence to 0.25 because phones are small.
 
 **3. How do we know someone looks at another desk?**
 - *Idea A:* MediaPipe face mesh for exact head angle. *Problem:* from across the room faces are tiny, face mesh needs a big face.

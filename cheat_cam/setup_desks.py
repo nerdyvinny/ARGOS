@@ -13,6 +13,7 @@ import sys
 import json
 import cv2
 import config
+import camera
 
 
 def get_source():
@@ -26,9 +27,8 @@ def get_source():
 
 def main():
     source = get_source()
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
-        print("Could not open the camera/video:", source)
+    cap = camera.open_camera(source)
+    if cap is None:
         return
 
     # skip a few frames because the first ones from a webcam are often dark

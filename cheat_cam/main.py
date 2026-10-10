@@ -1,6 +1,6 @@
 # The main program. Run it during the test:
 #
-#   python main.py              (uses SOURCE from config.py)
+#   python main.py              (uses SOURCE from config.py = the USB camera)
 #   python main.py test.mp4     (use a video file - great for practicing)
 #
 # Press Q in the video window to stop.
@@ -9,8 +9,10 @@ import os
 import sys
 import csv
 import time
+import webbrowser
 import cv2
 import config
+import camera
 import brain
 import detector
 import dashboard
@@ -114,9 +116,8 @@ def main():
         print("No", config.DESKS_FILE, "found. Run: python setup_desks.py")
         return
 
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
-        print("Could not open the camera/video:", source)
+    cap = camera.open_camera(source)
+    if cap is None:
         return
 
     is_file = isinstance(source, str)
@@ -142,7 +143,10 @@ def main():
 
     if config.DASHBOARD:
         dashboard.start()
-        print("Dashboard: http://localhost:" + str(config.DASHBOARD_PORT))
+        url = "http://localhost:" + str(config.DASHBOARD_PORT)
+        print("Dashboard:", url)
+        if config.OPEN_BROWSER:
+            webbrowser.open(url)
 
     start = time.time()
     frame_number = 0

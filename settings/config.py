@@ -14,6 +14,7 @@ VIDEO_FILE_FPS = 2
 # Picture size we ask the USB camera for
 CAMERA_WIDTH = 1920
 CAMERA_HEIGHT = 1080
+CAMERA_FPS = 30                  # pictures per second we ask the camera for (MJPG, see capture/camera.py)
 
 # Safety check: the laptop camera can only do 1280 wide.
 # If the camera we opened is smaller than this, it's the wrong camera and we stop.

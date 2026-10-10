@@ -124,4 +124,3 @@ Output:
 - It flags, a human decides. Evidence pictures should be deleted after the test.
 
 
-Added by Mayur

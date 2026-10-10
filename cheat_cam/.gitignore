@@ -1,0 +1,10 @@
+# don't upload these to GitHub
+venv/
+__pycache__/
+*.pyc
+*.pt
+evidence/
+alerts.csv
+desks_check.jpg
+*.mp4
+*.avi

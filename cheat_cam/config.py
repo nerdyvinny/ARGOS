@@ -28,8 +28,8 @@ TILES = 3
 TILE_OVERLAP = 0.15              # 15% overlap so people on the edge are not cut in half
 
 # Cut off the ceiling and the floor (0.0 to 1.0 of the picture height)
-CROP_TOP = 0.20
-CROP_BOTTOM = 0.85
+CROP_TOP = 0.0 
+CROP_BOTTOM = 1.0 
 
 # ---------- desks ----------
 DESKS_FILE = "desks.json"        # made by setup_desks.py

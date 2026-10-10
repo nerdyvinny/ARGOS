@@ -5,6 +5,7 @@
 # So after opening a camera we check how wide the picture is. Too small = wrong camera = stop.
 
 import cv2
+import sys
 from settings import config
 
 
@@ -20,8 +21,10 @@ def open_camera(source):
         return cap
 
     # a camera number: use DirectShow (Windows' default camera system can't read the Arducam)
-    cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
-    if not cap.isOpened():
+    if sys.platform == "win32":
+        cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)   # Windows needs DirectShow for the Arducam
+    else:
+        cap = cv2.VideoCapture(source)                  # Mac / Linux: the normal way works    if not cap.isOpened():
         print("Could not open camera", source, "- is the USB camera plugged in?")
         print("Also close the Windows Camera app (or Zoom/Teams) - only one program can use a camera at a time.")
         return None

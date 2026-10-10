@@ -18,6 +18,16 @@
 #   and ask CLIP "is this a wrist with a smartwatch or a bare wrist?".
 #   A watch is added to the phones list with "label": "smartwatch",
 #   so brain.py treats it like a phone (same timer and alert).
+#
+# Phone double-check (Hugging Face only, turn off with PHONE_CHECK = False in config.py):
+#   RT-DETR sometimes calls any small rectangle a phone (name tags, ID cards, paper).
+#   So every "phone" box is also shown to CLIP. We only keep it if CLIP also says
+#   phone (or smartwatch). This uses the same CLIP model as the watch check.
+#
+# Earbud / headphone check (Hugging Face only, turn off with EAR_CHECK = False in config.py):
+#   COCO has no earbuds or headphones either. We cut a square around each person's head
+#   (from the nose, eye and ear points) and ask CLIP if they wear earbuds or headphones.
+#   A hit is added to the phones list with "label": "earbuds" or "headphones".
 
 import numpy as np
 from PIL import Image
@@ -41,6 +51,35 @@ WATCH_TEXTS = [
     "a photo of a wrist in a sleeve",
     "a photo of a hand holding a pen",
 ]
+
+# phone double-check
+PHONE_CHECK = getattr(config, "PHONE_CHECK", True)
+# what CLIP chooses between for every "phone" box. Only the first two count as a device.
+PHONE_TEXTS = [
+    "a photo of a smartphone",
+    "a photo of a smartwatch",
+    "a photo of a name tag",
+    "a photo of an ID card",
+    "a photo of a piece of paper",
+    "a photo of a pen",
+    "a photo of a hand",
+]
+DEVICE_LABELS = ["phone", "smartwatch"]
+
+# earbud / headphone check
+EAR_CHECK = getattr(config, "EAR_CHECK", True)
+EAR_CONFIDENCE = getattr(config, "EAR_CONFIDENCE", 0.5)   # how sure CLIP has to be
+# what CLIP chooses between for every head. Only the first two count as a device.
+EAR_TEXTS = [
+    "a photo of a person wearing wireless earbuds",
+    "a photo of a person wearing headphones",
+    "a photo of a person with nothing in their ears",
+    "a photo of a person with long hair covering their ears",
+    "a photo of a person wearing a hat",
+]
+EAR_LABELS = ["earbuds", "headphones"]
+FACE_POINTS = [0, 1, 2, 3, 4]   # nose, eyes, ears
+
 LEFT_WRIST = 9
 RIGHT_WRIST = 10
 
@@ -108,8 +147,8 @@ def load_hf_models():
     hf_pose_model = VitPoseForPoseEstimation.from_pretrained(HF_POSE_MODEL).to(hf_device)
     hf_pose_model.eval()
 
-    if WATCH_CHECK:
-        print("Watch model:", HF_WATCH_MODEL)
+    if WATCH_CHECK or PHONE_CHECK or EAR_CHECK:
+        print("CLIP model (watch / phone check):", HF_WATCH_MODEL)
         hf_watch_processor = AutoProcessor.from_pretrained(HF_WATCH_MODEL)
         hf_watch_model = CLIPModel.from_pretrained(HF_WATCH_MODEL).to(hf_device)
         hf_watch_model.eval()
@@ -275,9 +314,102 @@ def hf_find_people_and_phones(tiles):
             people.append({"box": box, "conf": tile_person_confs[i][j], "points": points})
 
     people = remove_doubles(people)
+    if PHONE_CHECK:
+        phones = hf_check_phones(tiles, phones)
     if WATCH_CHECK:
         phones = phones + hf_find_watches(tiles, people)
+    if EAR_CHECK:
+        phones = phones + hf_find_ear_devices(tiles, people)
     return people, remove_doubles(phones)
+
+
+def hf_find_ear_devices(tiles, people):
+    # cut out every head and ask CLIP about earbuds / headphones
+    import torch
+
+    crops = []
+    crop_boxes = []
+    for person in people:
+        pts = []
+        for k in FACE_POINTS:
+            if k < len(person["points"]) and person["points"][k][2] >= config.KEYPOINT_CONFIDENCE:
+                pts.append(person["points"][k])
+        if len(pts) < 2:
+            continue   # can't see the face well enough
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+        b = person["box"]
+        # head square: a bit wider than the face points, at least 40% of the person box
+        side = max((max(xs) - min(xs)) * 2.2, (b[2] - b[0]) * 0.4)
+        if side < 24:
+            continue   # person too tiny to see earbuds
+        crop_box = [cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2]
+        piece = cut_from_tiles(tiles, crop_box, clip=True)
+        if piece is None:
+            continue
+        crops.append(Image.fromarray(np.ascontiguousarray(piece[:, :, ::-1])))
+        crop_boxes.append(crop_box)
+
+    found = []
+    if len(crops) == 0:
+        return found
+
+    inputs = hf_watch_processor(text=EAR_TEXTS, images=crops, return_tensors="pt", padding=True).to(hf_device)
+    with torch.inference_mode():
+        outputs = hf_watch_model(**inputs)
+    probs = outputs.logits_per_image.softmax(dim=1)   # one row per head, one column per text
+
+    for i in range(len(crops)):
+        best = int(probs[i].argmax())
+        conf = float(probs[i][best])
+        if best < len(EAR_LABELS) and conf >= EAR_CONFIDENCE:
+            found.append({"box": crop_boxes[i], "conf": conf, "label": EAR_LABELS[best]})
+    return found
+
+
+def hf_check_phones(tiles, phones):
+    # ask CLIP about every "phone" box, keep only real devices
+    import torch
+
+    if len(phones) == 0:
+        return phones
+
+    crops = []
+    for ph in phones:
+        b = ph["box"]
+        # a bit of extra room around the box so CLIP can see what it is
+        pad_x = (b[2] - b[0]) * 0.3
+        pad_y = (b[3] - b[1]) * 0.3
+        piece = cut_from_tiles(tiles, [b[0] - pad_x, b[1] - pad_y, b[2] + pad_x, b[3] + pad_y], clip=True)
+        if piece is None:
+            crops.append(None)
+        else:
+            crops.append(Image.fromarray(np.ascontiguousarray(piece[:, :, ::-1])))
+
+    images = [c for c in crops if c is not None]
+    if len(images) == 0:
+        return phones
+
+    inputs = hf_watch_processor(text=PHONE_TEXTS, images=images, return_tensors="pt", padding=True).to(hf_device)
+    with torch.inference_mode():
+        outputs = hf_watch_model(**inputs)
+    probs = outputs.logits_per_image.softmax(dim=1)   # one row per box, one column per text
+
+    kept = []
+    row = 0
+    for i in range(len(phones)):
+        if crops[i] is None:
+            kept.append(phones[i])   # couldn't cut it out, trust RT-DETR
+            continue
+        best = int(probs[row].argmax())
+        row = row + 1
+        if best < len(DEVICE_LABELS):
+            ph = dict(phones[i])
+            ph["label"] = DEVICE_LABELS[best]
+            kept.append(ph)
+    return kept
 
 
 def hf_find_watches(tiles, people):
@@ -320,15 +452,25 @@ def hf_find_watches(tiles, people):
     return watches
 
 
-def cut_from_tiles(tiles, box):
+def cut_from_tiles(tiles, box, clip=False):
     # find a tile that has this box inside it and cut the piece out
+    # clip=True: if the box sticks out of the tile a bit, just cut the part that's inside
+    cx = (box[0] + box[2]) / 2
+    cy = (box[1] + box[3]) / 2
     for ox, oy, piece in tiles:
         h, w = piece.shape[:2]
         x1 = int(box[0] - ox)
         y1 = int(box[1] - oy)
         x2 = int(box[2] - ox)
         y2 = int(box[3] - oy)
-        if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
+        if clip:
+            if not (0 <= cx - ox < w and 0 <= cy - oy < h):
+                continue
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(w, x2)
+            y2 = min(h, y2)
+        elif x1 < 0 or y1 < 0 or x2 > w or y2 > h:
             continue
         if x2 - x1 < 4 or y2 - y1 < 4:
             continue

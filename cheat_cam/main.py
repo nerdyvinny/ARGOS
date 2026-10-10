@@ -64,7 +64,7 @@ def draw(frame, desk_states, matches, phones):
     for ph in phones:
         x1, y1, x2, y2 = [int(v) for v in ph["box"]]
         cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 255), 3)
-        cv2.putText(img, "PHONE", (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+        cv2.putText(img, ph.get("label", "phone").upper(), (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
 
     return img
 

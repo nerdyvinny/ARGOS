@@ -1,2 +1,2 @@
 # ARGOS
-Anti-Cheating
+Anti-Cheating, for teachers.

@@ -5,10 +5,10 @@ phone out, looking at other desks, long stares. Desk = ID (no face recognition).
 Read README.md for how it works.
 
 ## Who owns which file (only edit your own file unless the team agrees)
-- Vince: camera setup + setup_desks.py
-- Person 2: detector.py (YOLO models, tiles)
-- Person 3: brain.py + config.py (cheating rules and numbers)
-- Person 4: dashboard.py + demo
+- Vince: camera setup (capture/camera.py) + tools/setup_desks.py
+- Person 2: vision/detector.py (YOLO models, tiles)
+- Person 3: rules/brain.py + settings/config.py (cheating rules and numbers)
+- Person 4: ui/dashboard.py + demo
 
 ## Rules for Claude
 - Write simple, beginner-friendly Python. No fancy tricks.

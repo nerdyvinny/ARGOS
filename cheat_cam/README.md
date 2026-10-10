@@ -122,3 +122,6 @@ Output:
 - A phone hidden under the desk can't be seen by any camera. Head-down + hands-under-desk could be a stretch "weak signal".
 - Students facing away from the camera have no face points, so head turn can't be measured for them.
 - It flags, a human decides. Evidence pictures should be deleted after the test.
+
+
+Added by Mayur

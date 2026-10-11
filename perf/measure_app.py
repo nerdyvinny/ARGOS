@@ -47,20 +47,20 @@ def main():
     real_update_all = brain.update_all
     deadline = [None]
 
-    def counting_show(drawn, desk_states):
+    def counting_show(drawn, people_states):
         if deadline[0] is None:
             deadline[0] = time.time() + seconds
         counts["shown"] = counts["shown"] + 1
         stamps["shown"].append(time.time())
-        if real_show(drawn, desk_states):
+        if real_show(drawn, people_states):
             return True
         return time.time() > deadline[0]
 
-    def counting_update_all(desk_states, people, phones, now):
+    def counting_update_all(people_states, people, phones, now):
         if deadline[0] is not None and time.time() <= deadline[0]:
             counts["checked"] = counts["checked"] + 1
             stamps["checked"].append(time.time())
-        return real_update_all(desk_states, people, phones, now)
+        return real_update_all(people_states, people, phones, now)
 
     app_main.show = counting_show
     brain.update_all = counting_update_all
@@ -71,14 +71,13 @@ def main():
     try:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         ok, frame = cap.read()
-        h, w = frame.shape[:2]
-        desk_states = brain.load_desks(w, h)
+        people_states = []
         detector.load_models()
         detector.detect(frame)     # warm up
         from ui import dashboard
         dashboard.start()
         alert_counts = {"alerts": 0}
-        app_main.run_live_camera(cap, desk_states, alert_counts)
+        app_main.run_live_camera(cap, people_states, alert_counts)
     finally:
         cap.release()
         cv2.destroyAllWindows()

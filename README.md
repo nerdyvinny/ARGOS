@@ -4,7 +4,7 @@ Anti-Cheating, for teachers.
 ## Exam Watch - 360 camera cheating detector
 
 One wide / 360 camera watches the whole test room.
-It gives every desk a color and a score, and sends an alert (with a picture) when someone:
+It gives every person a color and a score, and sends an alert (with a picture) when someone:
 
 1. **has a phone out** (phone seen at their desk for a moment, not a single flicker)
 2. **keeps looking at other desks** (turns their head away from *their own normal* for 2+ seconds, 4 times in 5 minutes)
@@ -24,26 +24,24 @@ venv\Scripts\activate.bat
 pip install -r requirements.txt
 ```
 
-Always run the commands below from the repo root (the top folder) (the models, `desks.json`, `alerts.csv` and `evidence\` are found relative to it).
+Always run the commands below from the repo root (the top folder) (the models, `alerts.csv` and `evidence\` are found relative to it).
 
 Got an NVIDIA GPU? Install the GPU version of PyTorch first (pick the command at pytorch.org > Get Started), then run the pip line above. Without a GPU it still works, just slower.
 
 ## Run it
 
 ```
-python -m tools.setup_desks
 python -m app.main
 ```
 
-- `tools/setup_desks.py` takes one picture and lets you draw a box on every desk (ENTER after each box, ESC when done). Do this once after the camera is in place. If the camera moves, do it again.
 - `app/main.py` starts watching. Press **Q** in the video window to stop.
-- Practice with a video file instead of the camera: `python -m tools.setup_desks practice.mp4` then `python -m app.main practice.mp4`
+- Practice with a video file instead of the camera: `python -m app.main practice.mp4`
 - We use the wide USB camera (Arducam), which is camera `1`. Camera `0` is the laptop camera, and the code refuses to use it: it checks that the picture is 1920 wide, and the laptop camera can only do 1280.
 - USB camera not found, or the picture is black? Close the Windows Camera app (only one program can use a camera), then unplug the USB camera, plug it back in, and try again. Never switch the Arducam to MJPG: it goes black until it is replugged. If the numbers changed, try `python -m app.main 2`.
 
 Output:
-- `alerts.csv` - every alert with time, desk and message
-- `evidence\` - a picture of the desk for every alert
+- `alerts.csv` - every alert with time, person and message
+- `evidence\` - a close-up of the person for every alert
 - web page at `http://localhost:5000` (teammates on the same Wi-Fi can use your laptop's IP)
 
 ## Files
@@ -56,16 +54,14 @@ ARGOS/
   rules/brain.py         cheating rules and scores
   ui/dashboard.py        the web page
   settings/config.py     all the numbers you can tune
-  tools/setup_desks.py   draw the desk boxes, saves desks.json
   rf_detect/             radio detector: phones transmitting + Bluetooth headphones (see below)
 ```
 
 | File | What it does |
 |---|---|
 | `settings/config.py` | All the numbers you can tune |
-| `tools/setup_desks.py` | Draw the desk boxes, saves `desks.json` |
 | `vision/detector.py` | Runs YOLO: finds people + face points, and phones. Cuts the 360 picture into tiles |
-| `rules/brain.py` | Decides who is cheating (head turn math, phone timer, scores) |
+| `rules/brain.py` | Follows each person and decides who is cheating (head turn math, phone timer, scores) |
 | `ui/dashboard.py` | The web page |
 | `app/main.py` | Puts it all together |
 
@@ -208,7 +204,7 @@ Tips that help a lot (all free or cheap):
 
 ### Camera link (TODO)
 
-The plan: **the radio says *when* a phone is active, and the camera says *which desk*.**
+The plan: **the radio says *when* a phone is active, and the camera says *which person*.**
 
 `camera_confirms()` in `rf_detect/rf_monitor.py` is a placeholder; for now it always says "camera not connected". Its comments describe two ways to connect it:
 - `app/main.py` saves what the camera sees to a small file, and the RF monitor reads it.
@@ -233,7 +229,7 @@ Once it's connected, set `CAMERA_CONFIRM = True` in `rf_config.py`, and a radio 
 **2. Can the radio show *which desk* the phone is at (a heatmap)?**
 - *We tried:* walking the antenna to every desk, and recording a phone at every seat.
 - *Problem:* one antenna only hears **how loud**, not **from where**. Two desks the same distance away sound identical. Each phone also changes its own volume up to 1000x depending on its service.
-- **Decision: dropped it.** The radio answers "is a phone active right now?" and the camera answers "which desk?". It would need 2+ receivers to work.
+- **Decision: dropped it.** The radio answers "is a phone active right now?" and the camera answers "which person?". It would need 2+ receivers to work.
 
 **3. Measure the time the signal takes to arrive? Add our own transmitter?**
 - *Problem:* you'd need to know when the phone sent the signal, and you can't. Even if you could, the radio's smallest time step (417 ns) is the time light takes to travel 125 m, and the room is 10 m.
@@ -259,7 +255,7 @@ Once it's connected, set `CAMERA_CONFIRM = True` in `rf_config.py`, and a radio 
 **1. How do we know who is who? Face recognition?**
 - *For:* sounds cool, judges like it.
 - *Against:* you have to sign up every student's face first, it fails when heads are down writing, and storing student faces is a privacy problem.
-- **Decision: the desk IS the ID.** Draw the desks once. Whoever sits in Desk 4 is "Desk 4". No tracking, no face database. (Stretch goal: match a desk to a seating chart name.)
+- **Decision: follow each person by their box.** The person box that overlaps most with last picture's box is the same person, called "Person 1", "Person 2"... No face database. Someone gone longer than `FORGET_PERSON_SECONDS` comes back as a new person.
 
 **2. How do we catch phones?**
 - *Idea A:* "head down for a long time" = phone. *Problem:* writing on the test also means head down. Tons of false alarms.
@@ -270,8 +266,8 @@ Once it's connected, set `CAMERA_CONFIRM = True` in `rf_config.py`, and a radio 
 - *Idea A:* MediaPipe face mesh for exact head angle. *Problem:* from across the room faces are tiny, face mesh needs a big face.
 - *Idea B:* YOLO pose gives nose, eyes and ears. If the nose moves off-center between the eyes/ears, the head is turned.
 - **Decision: B**, it comes free with the person detector.
-- *New problem:* the camera sees every desk from a different side, so "straight ahead" looks different for each person.
-- **Fix: each desk learns its own normal** (median head angle over the last 2 minutes). We only count turning *away from your own normal*.
+- *New problem:* the camera sees every person from a different side, so "straight ahead" looks different for each person.
+- **Fix: each person learns their own normal** (median head angle over the last 2 minutes). We only count turning *away from your own normal*.
 - *Another problem:* people stretch, look at the clock, crack their neck.
 - **Fix: time + count.** Short glances (< 2 s) don't count. 4 real look-aways in 5 minutes = alert. One very long stare (6 s) = alert right away.
 
@@ -302,11 +298,11 @@ Once it's connected, set `CAMERA_CONFIRM = True` in `rf_config.py`, and a radio 
 | Hours | Goal |
 |---|---|
 | 0-3 | Everyone installs, run the code on a laptop webcam. Camera person gets the 360 cam streaming |
-| 3-8 | Record 3-4 practice videos (normal test, phone cheater, looker, mix). Draw desks on them |
+| 3-8 | Record 3-4 practice videos (normal test, phone cheater, looker, mix) |
 | 8-16 | Tune detection + thresholds on the videos. Dashboard polish starts |
 | 16-20 | Sleep in shifts! |
 | 20-28 | Live test in a real room with the real camera. Fix what breaks |
-| 28-32 | Stretch goals (seating chart names, sound alert, fine-tuned phone model) |
+| 28-32 | Stretch goals ( sound alert, fine-tuned phone model) |
 | 32-36 | **Freeze the code.** Practice the demo 3 times. Have a backup video in case the live camera fails |
 
 ## Tuning cheat sheet (`config.py`)

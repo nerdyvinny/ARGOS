@@ -47,8 +47,8 @@ TILE_OVERLAP = 0.15              # 15% overlap so people on the edge are not cut
 CROP_TOP = 0.20
 CROP_BOTTOM = 0.85
 
-# ---------- desks ----------
-DESKS_FILE = "desks.json"        # made by setup_desks.py
+# ---------- following people ----------
+FORGET_PERSON_SECONDS = 10       # someone unseen this long gets a new "Person N" when they come back
 
 # ---------- looking at other desks ----------
 YAW_SMOOTH_FRAMES = 5            # average the head angle over a few frames
@@ -66,7 +66,7 @@ PHONE_WINDOW_SECONDS = 4.0       # look at the last 4 seconds (we only get ~2 pi
 PHONE_MIN_HITS = 3               # phone seen this many times in that window = alert
 
 # ---------- alerts ----------
-ALERT_COOLDOWN_SECONDS = 30      # don't spam the same alert for the same desk
+ALERT_COOLDOWN_SECONDS = 30      # don't spam the same alert for the same person
 EVIDENCE_FOLDER = "evidence"
 ALERTS_CSV = "alerts.csv"
 

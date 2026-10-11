@@ -7,7 +7,7 @@ Research only. No app code was changed. Checked on 2026-10-10.
 - ARGOS uses **one** tracking model: `yolo11n-pose.pt` (Ultralytics, AGPL-3.0).
   It finds every person and gives 17 body points. There is no separate face
   detector, face-landmark model, or eye/gaze tracker.
-- Speed on our laptop (CPU, no GPU), measured on `desks_check.jpg` (1920x1080),
+- Speed on our laptop (CPU, no GPU), measured on a saved 1920x1080 frame,
   3 tiles at 640: **1.45 FPS** for pose alone, **0.75 FPS** for pose + phone model.
   The stream wasn't running, so this is a saved frame, not the live camera.
 - 15 FPS is not reachable on this laptop with any model swap.
@@ -18,7 +18,7 @@ Research only. No app code was changed. Checked on 2026-10-10.
 
 | Category | What it uses | Where | What the app does with it |
 |---|---|---|---|
-| Body pose | `yolo11n-pose.pt` | loaded `vision/detector.py:21`, run `:92` | body points per person, used to match people to desks |
+| Body pose | `yolo11n-pose.pt` | loaded `vision/detector.py:21`, run `:92` | body points per person, used to follow people from picture to picture |
 | Face detection | none (uses the person box) | - | - |
 | Head pose | nose vs eye/ear points from the pose model | `rules/brain.py:86`, used at `:204` | left/right turn number; "look away" if it moves 0.25 from that person's 2-minute normal |
 | Eye / gaze | none | - | - |

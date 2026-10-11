@@ -25,20 +25,24 @@ def open_camera(source):
         print("Camera 0 is the laptop camera - we never use it. Use the USB camera (1), or try: python -m app.main 2")
         return None
 
+    # Ask for MJPG (compressed video) at 30 pictures a second. Without it the Arducam sends
+    # raw video, and USB 2.0 is only fast enough for about 4 raw 1920x1080 pictures a second.
+    # MJPG must be asked for WHILE the camera opens. Asking after it opened is ignored, and
+    # (in our first test) asking that way made the Arducam send black pictures.
+    settings = [cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"),
+                cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH,
+                cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT,
+                cv2.CAP_PROP_FPS, config.CAMERA_FPS]
+
     # a camera number: use DirectShow (Windows' default camera system can't read the Arducam)
     if sys.platform == "win32":
-        cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)   # Windows needs DirectShow for the Arducam
+        cap = cv2.VideoCapture(source, cv2.CAP_DSHOW, settings)   # Windows needs DirectShow for the Arducam
     else:
-        cap = cv2.VideoCapture(source)                  # Mac / Linux: the normal way works
+        cap = cv2.VideoCapture(source, cv2.CAP_ANY, settings)     # Mac / Linux: the normal way works
     if not cap.isOpened():
         print("Could not open camera", source, "- is the USB camera plugged in?")
         print("Also close the Windows Camera app (or Zoom/Teams) - only one program can use a camera at a time.")
         return None
-
-    # Do NOT ask this camera for MJPG (compressed video). We tested it: MJPG makes the
-    # Arducam send only black pictures until you unplug it and plug it back in.
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
 
     # the first few pictures are dark while the camera adjusts, so skip them
     frame = None

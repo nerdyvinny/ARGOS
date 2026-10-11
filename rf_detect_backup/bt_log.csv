@@ -1,0 +1,34 @@
+time,address,name,rssi,distance,why
+2026-10-10 23:52:19,62:83:C6:19:7E:AE,AirPods / Beats,-82,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:52:19,6B:F8:FB:18:7A:75,AirPods / Beats,-83,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:52:59,C6:CB:3F:4E:04:92,LE-Beats Pill,-85,far / weak,name has 'beats'
+2026-10-10 23:53:04,5B:5B:DF:EA:7B:2C,JBL Tune 520BT-LE,-84,far / weak,name has 'jbl'
+2026-10-10 23:53:09,F3:73:E5:C4:B9:30,JBL Tune 520BT-LE,-84,far / weak,name has 'jbl'
+2026-10-10 23:53:14,90:DA:07:7D:44:8A,JLab JBuds Lux ANC-BLE,-84,far / weak,name has 'buds'
+2026-10-10 23:53:19,F4:7A:07:A4:0F:C5,(no name),-85,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:53:24,55:3C:16:71:DB:44,AirPods / Beats,-83,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:53:44,4A:11:24:4C:E4:60,AirPods / Beats,-79,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:53:59,58:0C:8E:24:0B:E3,(no name),-85,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:54:10,55:3C:16:71:DB:44,AirPods / Beats,-84,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:54:30,5A:2D:4D:FD:25:C9,(no name),-85,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:54:45,4F:48:56:A8:FA:17,JBL LIVE670NC-LE,-85,far / weak,name has 'jbl'
+2026-10-10 23:54:50,5F:56:F3:34:2C:3C,AirPods / Beats,-84,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:55:00,58:0C:8E:24:0B:E3,(no name),-79,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:55:10,E3:33:16:2B:46:E5,AirPods / Beats,-85,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:55:42,58:0C:8E:24:0B:E3,(no name),-82,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:55:42,46:62:05:A3:D5:66,AirPods / Beats,-85,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:55:47,62:83:C6:19:7E:AE,AirPods / Beats,-74,in the room,Apple AirPods/Beats signal
+2026-10-10 23:55:48,6B:F8:FB:18:7A:75,AirPods / Beats,-81,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:55:48,C7:CB:2F:C7:43:26,(no name),-85,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:55:48,5A:2D:4D:FD:25:C9,(no name),-80,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:55:58,5E:10:47:F2:23:2C,AirPods / Beats,-80,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:55:58,F3:73:E5:C4:B9:30,JBL Tune 520BT-LE,-85,far / weak,name has 'jbl'
+2026-10-10 23:56:08,C6:CB:3F:4E:04:92,LE-Beats Pill,-84,far / weak,name has 'beats'
+2026-10-10 23:56:13,F8:3E:1F:54:2A:15,(no name),-85,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:56:18,46:62:05:48:9A:D8,(no name),-84,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:56:18,5D:6B:66:C1:B6:E1,AirPods / Beats,-82,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:56:43,4A:11:24:4C:E4:60,AirPods / Beats,-85,far / weak,Apple AirPods/Beats signal
+2026-10-10 23:57:13,46:62:05:48:9A:D8,(no name),-83,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:57:23,5A:2D:4D:FD:25:C9,(no name),-85,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:57:50,C7:CB:2F:C7:43:26,(no name),-85,far / weak,Google Fast Pair (usually earbuds)
+2026-10-10 23:57:55,F3:73:E5:C4:B9:30,JBL Tune 520BT-LE,-85,far / weak,name has 'jbl'

@@ -71,38 +71,87 @@ class RealRadio:
         if config.PPM:
             self.sdr.freq_correction = config.PPM
         self.sdr.gain = config.GAIN
-        self.last_center = None
+        if config.GAIN == "auto":
+            print("WARNING: GAIN is \"auto\". The radio then changes its own gain while it measures,")
+            print("so the dB numbers drift and can't be compared to the baseline. Use a number (e.g. 40).")
+        try:
+            self.sdr.set_agc_mode(False)      # the RTL2832's own digital AGC: off, so levels stay comparable
+        except Exception as e:
+            print("Could not turn off the RTL2832 AGC:", e)
 
     def read(self, center_hz):
-        self.sdr.center_freq = center_hz
-        if self.last_center is None:
-            self.sdr.read_samples(8192)       # first read after a retune is junk
-        self.last_center = center_hz
-        self.sdr.read_samples(4096)           # throw away a little so the radio settles
-        return self.sdr.read_samples(config.SAMPLES_PER_STEP)
+        return read_window(self.sdr, center_hz)
 
     def close(self):
         self.sdr.close()
 
 
+def read_window(sdr, center_hz):
+    # Tune, throw away the junk the radio makes right after tuning, then grab the samples.
+    # The tuner needs a few ms to lock, and samples from the OLD frequency are still on
+    # their way over USB. This happens after EVERY retune, so we throw away the same
+    # amount every time (the old code threw away extra only on the very first read).
+    sdr.set_center_freq(center_hz)
+    sdr.read_samples(config.SETTLE_SAMPLES)
+    return sdr.read_samples(config.SAMPLES_PER_STEP)
+
+
 class FakeRadio:
-    # Pretend radio for testing. Quiet noise everywhere.
-    # When phone_on is True, the 700 MHz band gets short bursts of extra power.
-    # phone_strength is how loud (4 = about +12 dB). fovtest changes it to
-    # pretend the phone moved further away.
+    # Pretend radio for testing. It tries to act like the real one:
+    #  - quiet noise everywhere, plus the small fake spike in the center every RTL-SDR has
+    #  - junk for a few ms after EVERY retune (how long is a GUESS, see DECISIONS.md;
+    #    "scan" measures it on the real radio)
+    #  - nothing can be heard above TUNER_MAX_MHZ
+    #  - when phone_on is True: a phone on a 10 MHz carrier in B12/17 (704-714 MHz) sends
+    #    SHORT bursts (1-5 ms) on a few "resource blocks" (180 kHz to 1 MHz wide), about
+    #    4 per 0.1 s, like a phone that is streaming. Most of the band is quiet most of the time.
+    # (The old fake phone was a loud 8 ms burst across the WHOLE window in every grab. That was
+    #  too easy, so it hid the bug where real short bursts were averaged away.)
+    # phone_strength is how loud a burst is: 4 = 16x the noise power per Hz = +12 dB above the floor.
+    # fovtest changes it to pretend the phone moved further away.
     def __init__(self):
         self.rng = np.random.default_rng(1)
         self.phone_on = False
         self.phone_strength = 4.0
+        self.center = None
+        self.since_tune = 0            # samples read since the last retune
+        self.junk_samples = 8192       # junk after each retune (3.4 ms, a guess)
+        self.sdr = self                # so code that talks to "radio.sdr" works with the fake too
 
     def read(self, center_hz):
-        n = config.SAMPLES_PER_STEP
-        noise = self.rng.normal(0, 0.01, n) + 1j * self.rng.normal(0, 0.01, n)
-        mhz = center_hz / 1e6
-        if self.phone_on and 699 <= mhz <= 716:
-            start = int(self.rng.integers(0, n - 20000))
-            noise[start:start + 20000] *= self.phone_strength
-        return noise
+        return read_window(self, center_hz)
+
+    # the next two act like pyrtlsdr's RtlSdr, so read_window() works the same on both
+    def set_center_freq(self, hz):
+        self.center = hz
+        self.since_tune = 0
+
+    def read_samples(self, n):
+        x = self.rng.normal(0, 0.01, n) + 1j * self.rng.normal(0, 0.01, n)
+        x = x + (0.002 + 0.001j)                          # the fake spike at the center
+        if self.phone_on and self.center <= config.TUNER_MAX_MHZ * 1e6:
+            self.add_phone_bursts(x)
+        if self.since_tune < self.junk_samples:           # junk right after tuning
+            bad = min(n, self.junk_samples - self.since_tune)
+            x[:bad] = x[:bad] * 10
+        self.since_tune = self.since_tune + n
+        return x
+
+    def add_phone_bursts(self, x):
+        n = len(x)
+        count = self.rng.poisson(4 * n / config.SAMPLES_PER_STEP)
+        for _ in range(count):
+            width = self.rng.choice([180e3, 360e3, 1.08e6])            # 1, 2 or 6 resource blocks
+            low = self.rng.uniform(704e6, 714e6 - width) - self.center  # where it lands, from our center
+            if low + width < -config.SAMPLE_RATE / 2 or low > config.SAMPLE_RATE / 2:
+                continue                                                # not in this window
+            length = min(n - 1, int(self.rng.uniform(1, 5) * 1e-3 * config.SAMPLE_RATE))
+            start = int(self.rng.integers(0, n - length))
+            burst = self.rng.normal(0, 0.01, length) + 1j * self.rng.normal(0, 0.01, length)
+            spectrum = np.fft.fft(burst)
+            freqs = np.fft.fftfreq(length, 1.0 / config.SAMPLE_RATE)
+            spectrum[(freqs < low) | (freqs > low + width)] = 0          # keep only its resource blocks
+            x[start:start + length] += np.fft.ifft(spectrum) * self.phone_strength
 
     def close(self):
         pass
@@ -120,11 +169,25 @@ def make_steps(bands):
         end = b["end"] * 1e6
         center = start + width / 2
         while True:
-            steps.append({"band": b["name"], "center": center})
+            # the RTL-SDR can't tune above TUNER_MAX_MHZ: skip those windows
+            # (cant_hear() below reports them, so they are never silently "ok")
+            if center + width / 2 <= config.TUNER_MAX_MHZ * 1e6:
+                steps.append({"band": b["name"], "center": center})
             if center + width / 2 >= end:
                 break
             center = center + width
     return steps
+
+
+def cant_hear(band, steps):
+    # Gives back a short text about the part of this band the radio CAN'T hear, or None.
+    width = config.SAMPLE_RATE * config.USABLE_FRACTION
+    tops = [s["center"] + width / 2 for s in steps if s["band"] == band["name"]]
+    if not tops:
+        return "CAN'T HEAR: above the %d MHz RTL-SDR limit" % config.TUNER_MAX_MHZ
+    if max(tops) < band["end"] * 1e6:
+        return "can't hear %.0f-%.0f MHz" % (max(tops) / 1e6, band["end"])
+    return None
 
 
 def bin_mask():
@@ -148,11 +211,19 @@ def measure(samples):
     power = (np.abs(spectrum) ** 2) / np.sum(window ** 2)
     power = power[:, bin_mask()]
 
-    seg_power = power.mean(axis=1)                       # power of each small time slice
-    average = seg_power.mean()
-    chunk_power = seg_power[:(segments // config.CHUNKS) * config.CHUNKS]
-    chunk_power = chunk_power.reshape(config.CHUNKS, -1).mean(axis=1)
-    peak = chunk_power.max()                             # loudest piece = catches short bursts
+    average = power.mean()                               # everything, averaged as power (not dB)
+
+    # Peak: phones send in short bursts (often 1 ms) that only use a slice of the
+    # band (a few "resource blocks", 180 kHz each). If we average a 1 ms burst with
+    # lots of quiet time or quiet frequencies, it disappears. So we cut the spectrum of
+    # every FFT slice (0.43 ms) into small pieces about PEAK_BINS wide, and keep the
+    # loudest piece. That is about the size of one burst, so a burst shows at (almost)
+    # full strength. Pure noise also has a loudest piece, about 2 dB above the
+    # average; the baseline learns that, so it doesn't cause alarms.
+    pieces = max(1, power.shape[1] // config.PEAK_BINS)
+    peak = 0.0
+    for part in np.array_split(power, pieces, axis=1):
+        peak = max(peak, part.mean(axis=1).max())        # loudest 0.43 ms slice of this piece
 
     return to_db(average), to_db(peak)
 
@@ -200,7 +271,26 @@ def baseline_file(simulate):
     return config.BASELINE_FILE
 
 
-def make_baseline(radio, steps, file_name):
+def measure_settings(simulate):
+    # Everything that changes the dB numbers. A baseline (or fovtest) only makes sense
+    # with the SAME settings: e.g. 10 dB less GAIN makes every reading 10 dB lower, so
+    # nothing would ever look "above normal". So we save these with the file and check them.
+    return {
+        "version": 2,                    # 2 = how measure() works since the burst fix. Change it if measure() changes
+        "simulate": simulate,            # a fake-radio file must never be used for the real radio
+        "sample_rate": config.SAMPLE_RATE,
+        "gain": config.GAIN,
+        "ppm": config.PPM,
+        "samples_per_step": config.SAMPLES_PER_STEP,
+        "settle_samples": config.SETTLE_SAMPLES,
+        "fft_size": config.FFT_SIZE,
+        "peak_bins": config.PEAK_BINS,
+        "usable_fraction": config.USABLE_FRACTION,
+        "dc_notch_hz": config.DC_NOTCH_HZ,
+    }
+
+
+def make_baseline(radio, steps, file_name, simulate=False):
     sweeps = []
     for i in range(config.BASELINE_SWEEPS):
         print("Baseline sweep", i + 1, "of", config.BASELINE_SWEEPS, "(keep the room quiet, phones OFF)")
@@ -213,16 +303,70 @@ def make_baseline(radio, steps, file_name):
         baseline[key] = {"avg": float(np.median(avgs)), "peak": float(np.median(peaks))}
 
     with open(file_name, "w") as f:
-        json.dump(baseline, f, indent=2)
+        json.dump({"settings": measure_settings(simulate), "values": baseline}, f, indent=2)
     print("Saved", file_name, "with", len(baseline), "frequency windows")
+
+    # A quick check you can compare with FIX_REPORT.md: in an empty room the loudest
+    # burst-sized piece is only about +2 dB above the average (that's just noise).
+    # Much more than that means junk after retuning, or something really transmitting.
+    print("Empty-room check: loudest burst-sized piece minus average (pure noise is about +2 dB):")
+    names = []
+    for s in steps:
+        if s["band"] not in names:
+            names.append(s["band"])
+    for name in names:
+        spread = [baseline[step_key(s)]["peak"] - baseline[step_key(s)]["avg"] for s in steps if s["band"] == name]
+        print("   %-14s +%.1f dB (worst window +%.1f dB)" % (name, float(np.median(spread)), max(spread)))
     return baseline
 
 
-def load_baseline(file_name):
+def settle_check(sdr, center_hz):
+    # How long does the junk after tuning REALLY last on this radio? ("scan" shows it)
+    # We tune away and back, and this time KEEP the first samples to look at them.
+    # It can only see junk that is louder or quieter than normal (3 dB or more).
+    sdr.set_center_freq(center_hz + 5e6)
+    sdr.read_samples(config.SETTLE_SAMPLES)
+    sdr.set_center_freq(center_hz)
+    raw = np.asarray(sdr.read_samples(4 * config.SETTLE_SAMPLES))
+    n = config.FFT_SIZE
+    pieces = len(raw) // n
+    power = np.mean(np.abs(raw[:pieces * n].reshape(pieces, n)) ** 2, axis=1)
+    normal = np.median(power[pieces // 2:])           # by the second half it has surely settled
+    junk = 0
+    while junk < pieces and abs(to_db(power[junk]) - to_db(normal)) > 3.0:
+        junk = junk + 1
+    junk_ms = 1000.0 * junk * n / config.SAMPLE_RATE
+    settle_ms = 1000.0 * config.SETTLE_SAMPLES / config.SAMPLE_RATE
+    print("")
+    print("Retune check: junk after tuning lasted about %.1f ms. We throw away %.1f ms." % (junk_ms, settle_ms))
+    if junk >= pieces // 2:
+        print("   WARNING: it never settled. Something is wrong with the radio (or a strong signal is switching on/off).")
+    elif junk * n > config.SETTLE_SAMPLES:
+        print("   WARNING: not enough! Raise SETTLE_SAMPLES in rf_config.py to at least %d, then redo baseline." % (2 * junk * n))
+    else:
+        print("   OK")
+    return junk_ms
+
+
+def load_baseline(file_name, simulate=False):
+    # Gives back the saved numbers, or None if there is no file or it can't be trusted.
+    # Used for the baseline file and the fovtest file (same kind of .json file).
     if not os.path.exists(file_name):
         return None
     with open(file_name) as f:
-        return json.load(f)
+        data = json.load(f)
+    name = os.path.basename(file_name)
+    if not isinstance(data, dict) or "settings" not in data or "values" not in data:
+        print(name, "is from an older version of this program, so it is NOT used. Make it again.")
+        return None
+    wanted = measure_settings(simulate)
+    if data["settings"] != wanted:
+        print(name, "was made with different settings, so it is NOT used. Make it again. Differences:")
+        for key in wanted:
+            if data["settings"].get(key) != wanted[key]:
+                print("   %s: file has %s, now %s" % (key, data["settings"].get(key), wanted[key]))
+        return None
+    return data["values"]
 
 
 # ---------------- reporting ----------------
@@ -247,7 +391,8 @@ def band_readings(bands, steps, now, baseline):
                     avg_delta = d_avg
                 if peak_delta is None or d_peak > peak_delta:
                     peak_delta = d_peak
-        rows.append({"band": b, "level": level, "avg_delta": avg_delta, "peak_delta": peak_delta})
+        rows.append({"band": b, "level": level, "avg_delta": avg_delta, "peak_delta": peak_delta,
+                     "cant_hear": cant_hear(b, steps)})
     return rows
 
 
@@ -267,17 +412,22 @@ def band_status(row, history, camera):
     # Gives back (text to show, True if this band counts as ACTIVE).
     # camera = what camera_confirms() said: True, False, or None (not linked)
     name = row["band"]["name"]
+    if row.get("cant_hear") and row.get("level") is None:
+        return row["cant_hear"], False                  # the whole band is out of the radio's range
+    note = ""
+    if row.get("cant_hear"):
+        note = "  (" + row["cant_hear"] + ")"           # part of the band is out of range
     if row["avg_delta"] is None:
-        return "(no baseline)", False
+        return "(no baseline)" + note, False
     if sum(history[name]) >= config.CONFIRM_HITS:
         if config.CAMERA_CONFIRM and camera is False:
-            return "RF only, camera sees nothing (ignored)", False
+            return "RF only, camera sees nothing (ignored)" + note, False
         if camera is True:
-            return "ACTIVE  <-- transmitting (camera agrees)", True
-        return "ACTIVE  <-- transmitting", True
+            return "ACTIVE  <-- transmitting (camera agrees)" + note, True
+        return "ACTIVE  <-- transmitting" + note, True
     if history[name][-1]:
-        return "maybe", False
-    return "ok", False
+        return "maybe" + note, False
+    return "ok" + note, False
 
 
 def print_table(rows, history, sweep_number, camera):
@@ -289,7 +439,8 @@ def print_table(rows, history, sweep_number, camera):
         status, active = band_status(r, history, camera)
         avg_text = "" if r["avg_delta"] is None else "%+.1f" % r["avg_delta"]
         peak_text = "" if r["peak_delta"] is None else "%+.1f" % r["peak_delta"]
-        print("%-14s %-16s %9.1f %9s %9s  %s" % (name, r["band"]["carriers"][:16], r["level"], avg_text, peak_text, status))
+        level_text = "" if r["level"] is None else "%.1f" % r["level"]
+        print("%-14s %-16s %9s %9s %9s  %s" % (name, r["band"]["carriers"][:16], level_text, avg_text, peak_text, status))
 
 
 def write_log(rows, history, camera):
@@ -301,7 +452,7 @@ def write_log(rows, history, camera):
         for r in rows:
             name = r["band"]["name"]
             status, active = band_status(r, history, camera)
-            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), name, round(r["level"], 2),
+            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), name, "" if r["level"] is None else round(r["level"], 2),
                         "" if r["avg_delta"] is None else round(r["avg_delta"], 2),
                         "" if r["peak_delta"] is None else round(r["peak_delta"], 2),
                         int(active)])
@@ -364,6 +515,7 @@ def measure_spot(radio, steps, bands, baseline):
 def run_fovtest(radio, steps, bands, baseline, simulate):
     # Sets the alarm level so a phone at the farthest desk counts, but a phone
     # behind the camera or in the next room doesn't. See RANGE in rf_config.py.
+    bands = [b for b in bands if any(s["band"] == b["name"] for s in steps)]   # skip bands the radio can't hear
     print("")
     print("RANGE TEST. You need one test phone. Turn its Wi-Fi OFF, then start a")
     print("phone call or stream a video on mobile data, so it keeps transmitting.")
@@ -430,7 +582,7 @@ def run_fovtest(radio, steps, bands, baseline, simulate):
         print("antenna, the antenna closer to the students, or a lower GAIN (see rf_config.py).")
         return
     with open(fov_file(simulate), "w") as f:
-        json.dump(levels, f, indent=2)
+        json.dump({"settings": measure_settings(simulate), "values": levels}, f, indent=2)
     print("")
     print("Saved", fov_file(simulate), "- monitor will use these alarm levels.")
     print("Bands not set here still use the normal rules. Re-run this if you move the antenna or camera.")
@@ -513,6 +665,10 @@ def main():
     bands = [b for b in config.BANDS if b["enabled"]]
     steps = make_steps(bands)
     print("Watching", len(bands), "bands in", len(steps), "frequency windows")
+    for b in bands:
+        text = cant_hear(b, steps)
+        if text:
+            print("  %s (%.0f-%.0f MHz): %s. A phone using only this part is MISSED." % (b["name"], b["start"], b["end"], text))
 
     if simulate:
         radio = FakeRadio()
@@ -527,17 +683,22 @@ def main():
 
     try:
         if mode == "baseline":
-            make_baseline(radio, steps, baseline_file(simulate))
+            make_baseline(radio, steps, baseline_file(simulate), simulate)
             return
 
         baseline = None
         if mode in ("monitor", "fovtest"):
-            baseline = load_baseline(baseline_file(simulate))
+            baseline = load_baseline(baseline_file(simulate), simulate)
             if baseline is None and simulate:
                 print("No fake baseline yet, making one first")
-                baseline = make_baseline(radio, steps, baseline_file(simulate))
+                baseline = make_baseline(radio, steps, baseline_file(simulate), simulate)
             if baseline is None:
-                print("No", config.BASELINE_FILE, "yet. Run: py rf_monitor.py baseline  (in the EMPTY room)")
+                print("No usable", baseline_file(simulate), "yet. Run: py rf_monitor.py baseline  (in the EMPTY room)")
+                return
+            missing = [step_key(s) for s in steps if step_key(s) not in baseline]
+            if missing:
+                print("WARNING:", len(missing), "frequency windows have no baseline (bands were changed?).")
+                print("They show \"(no baseline)\" and can never alarm. Run baseline again.")
                 return
 
         if mode == "fovtest":
@@ -555,7 +716,7 @@ def main():
 
         fov = None
         if mode == "monitor" and config.USE_FOV_TEST:
-            fov = load_baseline(fov_file(simulate))     # same kind of .json file, so we reuse the loader
+            fov = load_baseline(fov_file(simulate), simulate)     # same kind of .json file, so we reuse the loader
             if fov is None:
                 print("No front/back test yet, so phones BEHIND the camera count too. Run: fovtest")
             else:
@@ -591,6 +752,7 @@ def main():
             if mode == "monitor" and not simulate:    # keep fake data out of the real log
                 write_log(rows, history, camera)
             if mode == "scan":
+                settle_check(radio.sdr, steps[0]["center"])
                 break
 
         if mode == "monitor":

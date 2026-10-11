@@ -11,6 +11,7 @@ FOLDER = os.path.dirname(os.path.abspath(__file__))
 SAMPLE_RATE = 2.4e6          # RTL-SDR: 2.4 MHz is the most it does reliably (use 2.048e6 if you get dropouts)
 GAIN = 40                    # in dB. Use "auto" to let the radio decide. Lower = shorter range (see RANGE below)
 PPM = 0                      # frequency correction, leave 0
+TUNER_MAX_MHZ = 1766         # the R820T tuner can't go higher. Windows above this are skipped and REPORTED as "can't hear"
 
 # Python needs rtlsdr.dll (the RTL-SDR driver). SDR++ comes with one, so we borrow it.
 # Put the folder where you unzipped SDR++ here. If it is wrong, the program tells you.
@@ -18,8 +19,11 @@ RTLSDR_DLL_FOLDER = os.path.join(os.path.expanduser("~"), "Downloads", "sdrpp_wi
 
 # ---------- how we measure ----------
 SAMPLES_PER_STEP = 262144    # samples grabbed at each frequency (about 0.1 second)
+SETTLE_SAMPLES = 32768       # thrown away after EVERY retune (about 14 ms): the tuner is still locking and old
+                             # samples are still coming over USB. "scan" measures how long the junk really lasts
 FFT_SIZE = 1024              # must divide SAMPLES_PER_STEP evenly
-CHUNKS = 16                  # each grab is cut into this many pieces so we can catch short bursts
+CHUNKS = 16                  # NOT USED ANY MORE (old way of catching bursts, averaged them away). Kept so old notes make sense
+PEAK_BINS = 96               # bursts are looked for in pieces this many FFT bins wide (96 x 2.3 kHz = 225 kHz, about one phone "resource block")
 USABLE_FRACTION = 0.8        # only use the middle 80% of each window (the edges are weak)
 DC_NOTCH_HZ = 60000          # ignore this much around the center (the radio makes a fake spike there)
 
@@ -30,7 +34,10 @@ SIM_BASELINE_FILE = os.path.join(FOLDER, "rf_baseline_sim.json")   # used with -
 
 # ---------- deciding "a phone is transmitting" ----------
 THRESHOLD_DB = 3.0           # average power this many dB above baseline = suspicious
-PEAK_THRESHOLD_DB = 6.0      # a short burst this many dB above the baseline peak = suspicious
+PEAK_THRESHOLD_DB = 3.0      # a short burst this many dB above the baseline peak = suspicious
+                             # (was 6.0 when the peak was a 6.8 ms average. The peak is now the loudest
+                             #  0.43 ms x 225 kHz piece, which moves only ~0.2 dB between empty-room
+                             #  sweeps, so 3 dB is still far above the noise. See DECISIONS.md)
 CONFIRM_HITS = 2             # must be suspicious in this many...
 CONFIRM_WINDOW = 5           # ...of the last this many sweeps before we call it ACTIVE
 
@@ -98,7 +105,10 @@ BANDS = [
     # top edge of the RTL-SDR: weaker here, and some dongles can't lock up this high.
     # If these rows show "PLL not locked" or junk numbers, set them to False.
     {"name": "B70 AWS-4",    "start": 1695.0, "end": 1710.0, "carriers": "Boost (Dish)",      "enabled": True},
-    {"name": "B66 AWS",      "start": 1710.0, "end": 1765.0, "carriers": "all big 3",         "enabled": True},
+    {"name": "B66 AWS",      "start": 1710.0, "end": 1780.0, "carriers": "all big 3",         "enabled": True},
+    # B66 really goes up to 1780 MHz (it used to say 1765 here, which hid that 1766-1780 is never heard).
+    # Above the RTL-SDR's limit: listed so the table SAYS it can't hear them, instead of hiding them.
+    {"name": "PCS B2/B25",   "start": 1850.0, "end": 1915.0, "carriers": "all big 3",         "enabled": True},
 ]
 
 # ============================================================

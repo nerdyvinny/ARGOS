@@ -157,16 +157,14 @@ Close SDR++ first. Only one program can use the radio at a time.
 ```
 py -3.12 rf_detect\rf_monitor.py scan
 py -3.12 rf_detect\rf_monitor.py baseline
-py -3.12 rf_detect\rf_monitor.py fovtest
 py -3.12 rf_detect\rf_monitor.py monitor
 py -3.12 rf_detect\rf_monitor.py bluetooth
 ```
 
 1. `scan` - one sweep. A good first test that the radio works.
 2. `baseline` - records the **empty room**, with phones off. Redo it if you move the antenna or change rooms.
-3. `fovtest` - the range test, which keeps the alarm to this room (see below).
-4. `monitor` - watches for phones, and checks Bluetooth in the background. Press **Ctrl+C** to stop.
-5. `bluetooth` - Bluetooth only. It doesn't need the RTL-SDR.
+3. `monitor` - watches for phones, and checks Bluetooth in the background. Press **Ctrl+C** to stop.
+4. `bluetooth` - Bluetooth only. It doesn't need the RTL-SDR.
 
 Extra options:
 - `--simulate` - a fake radio and fake Bluetooth, to try it with no hardware.
@@ -180,7 +178,7 @@ The web page opens by itself at `http://localhost:5050` (the camera dashboard is
 Output (all in `rf_detect\`; git ignores these files):
 - `rf_log.csv` - every phone sweep
 - `bt_log.csv` - every new headphone seen
-- `rf_baseline.json`, `rf_fov.json` - the empty-room baseline and the range test results
+- `rf_baseline.json` - the empty-room baseline
 
 Tests (no hardware needed): `py -3.12 -m unittest tests.test_rf_monitor -v`
 
@@ -188,19 +186,14 @@ Tests (no hardware needed): `py -3.12 -m unittest tests.test_rf_monitor -v`
 
 Radio has no "distance" setting. Signals just get weaker with distance and walls. So we limit range by **signal strength**: anything quieter than a phone at the back desk counts as "not in this room".
 
-- **Phones: run `fovtest`.** You need one test phone with Wi-Fi off, on a call or streaming video so it keeps transmitting. Put it in three spots:
-  1. the **farthest desk** the camera can see (should count)
-  2. **behind the camera / antenna** (ignore)
-  3. in the **next classroom** or hallway, right behind the wall (ignore; you can skip this one)
-
-  It sets the alarm level halfway between the quietest "count" spot and the loudest "ignore" spot, for each band. It also says honestly if it can't tell them apart.
+- **Phones:** there is no range test. Point the antenna's blind spot at noisy neighbors, put the metal sheet behind it, lower `GAIN`, and record the baseline at the venue (see the tips below).
 - **Bluetooth: set `BT_MIN_RSSI`** in `rf_config.py`. Put headphones or the JBL speaker in the next room, run `bluetooth`, read the dBm, and set `BT_MIN_RSSI` about 5 higher. For example, the next room shows -88, so set it to -83.
 
 Tips that help a lot (all free or cheap):
 - **Antenna toward the middle of the room**, not in a corner. In a corner, a phone right behind the wall can be closer than your own back desk. A USB extension cable moves the radio without moving the laptop.
 - **Aim the antenna's blind spot.** The RTL-SDR's antenna is nearly deaf off the ends of its rods. Lay the rods pointing at the noisiest neighbor's wall.
 - **Record the baseline while the classes next door are in session**, so their normal activity counts as "normal".
-- **Lower `GAIN`** in `rf_config.py` so far, weak signals disappear. Redo `baseline` and `fovtest` afterwards.
+- **Lower `GAIN`** in `rf_config.py` so far, weak signals disappear. Redo `baseline` afterwards.
 
 ### Camera link (TODO)
 
@@ -214,7 +207,7 @@ Once it's connected, set `CAMERA_CONFIRM = True` in `rf_config.py`, and a radio 
 
 ### RF tuning cheat sheet (`rf_detect/rf_config.py`)
 
-- Too many phone false alarms -> run `fovtest`, raise `THRESHOLD_DB` / `PEAK_THRESHOLD_DB`, or raise `CONFIRM_HITS`
+- Too many phone false alarms -> raise `THRESHOLD_DB` / `PEAK_THRESHOLD_DB`, or raise `CONFIRM_HITS`
 - Missing real phones -> lower `THRESHOLD_DB` / `PEAK_THRESHOLD_DB`, and check the baseline was taken with phones off
 - Sweeps too slow -> set bands nobody uses in your area to `"enabled": False`
 - B70 / B66 show junk numbers -> set them to `"enabled": False` (they're at the very top of what the radio can reach)

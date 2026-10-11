@@ -1,0 +1,84 @@
+# Tests for rf_detect/rf_monitor.py. Uses --simulate, so no radio is needed.
+# Run from the repo root:  python -m unittest discover -s tests -v
+
+import os
+import sys
+import subprocess
+import unittest
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def run(args, folder):
+    return subprocess.run([sys.executable] + args, cwd=folder, capture_output=True, text=True, timeout=60)
+
+
+class ImportTests(unittest.TestCase):
+
+    # B9
+    def test_runs_as_a_module_from_the_repo_root(self):
+        result = run(["-m", "rf_detect.rf_monitor", "scan", "--simulate", "--no-web"], REPO)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    # B9 (guard: the old way, from inside the rf_detect folder, still works)
+    def test_runs_from_inside_the_rf_detect_folder(self):
+        result = run(["rf_monitor.py", "scan", "--simulate", "--no-web"], os.path.join(REPO, "rf_detect"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    # no batch file needed: run the file by its path from the repo root
+    def test_runs_by_path_from_the_repo_root(self):
+        result = run([os.path.join("rf_detect", "rf_monitor.py"), "scan", "--simulate", "--no-web"], REPO)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class WaterfallTests(unittest.TestCase):
+
+    def test_scan_writes_the_waterfall(self):
+        result = run([os.path.join("rf_detect", "rf_monitor.py"), "scan", "--simulate", "--no-web"], REPO)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(os.path.exists(os.path.join(REPO, "rf_detect", "rf_waterfall.html")))
+
+    # the desk heatmap was removed, so "survey" is no longer a mode
+    def test_survey_mode_is_gone(self):
+        result = run([os.path.join("rf_detect", "rf_monitor.py"), "survey", "--simulate", "--no-web"], REPO)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Use:", result.stdout)
+
+
+class SuspiciousTests(unittest.TestCase):
+
+    def test_loud_band_is_suspicious_and_quiet_is_not(self):
+        sys.path.insert(0, os.path.join(REPO, "rf_detect"))
+        import rf_monitor
+        loud = {"band": {"name": "B5 850"}, "avg_delta": 3.5, "peak_delta": 7.0}
+        quiet = {"band": {"name": "B5 850"}, "avg_delta": 0.5, "peak_delta": 1.0}
+        self.assertTrue(rf_monitor.is_suspicious(loud))
+        self.assertFalse(rf_monitor.is_suspicious(quiet))
+
+
+class BluetoothTests(unittest.TestCase):
+
+    def test_finds_fake_headphones_but_not_the_mouse(self):
+        result = run([os.path.join("rf_detect", "rf_monitor.py"), "bluetooth", "--simulate", "--no-web", "--sweeps", "3"], REPO)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Apple AirPods/Beats signal", result.stdout)
+        self.assertIn("Galaxy Buds2 Pro", result.stdout)
+        self.assertNotIn("Logitech Mouse", result.stdout)
+        # the fake earbuds "in the next room" are too weak, so they are ignored (BT_MIN_RSSI)
+        self.assertNotIn("Sony WF-1000XM5", result.stdout)
+        self.assertIn("probably another room", result.stdout)
+
+    def test_headphone_rules(self):
+        sys.path.insert(0, os.path.join(REPO, "rf_detect"))
+        import bt_scan
+        def dev(name="", maker=None, uuids=None):
+            return {"name": name, "manufacturer_data": maker or {}, "service_uuids": uuids or [], "service_data": {}}
+        self.assertIsNotNone(bt_scan.why_headphones(dev(name="WH-1000XM5")))
+        self.assertIsNotNone(bt_scan.why_headphones(dev(uuids=["0000fe2c-0000-1000-8000-00805f9b34fb"])))
+        self.assertIsNotNone(bt_scan.why_headphones(dev(maker={0x004C: bytes([0x07, 0x19])})))
+        self.assertIsNone(bt_scan.why_headphones(dev(maker={0x004C: bytes([0x10, 0x05])})))    # an iPhone
+        self.assertIsNone(bt_scan.why_headphones(dev(name="Logitech Mouse")))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -110,6 +110,15 @@ def draw(frame, people_states, matches, phones, width=None):
     return img
 
 
+def count_phones(items):
+    # how many phones are in the picture (the radio monitor asks the dashboard for this)
+    count = 0
+    for it in items:
+        if it.get("kind") == "phone" or it.get("label") == "phone":
+            count = count + 1
+    return count
+
+
 def resize_to_width(img, width):
     h, w = img.shape[:2]
     if w <= width:
@@ -312,6 +321,7 @@ def run_live(cap):
             last_dashboard[0] = time.time()
             clips.push(small)
             dashboard.set_people(people_states)
+            dashboard.set_phones_seen(count_phones(items))
             ok_jpg, jpg = cv2.imencode(".jpg", small)
             if ok_jpg:
                 dashboard.set_frame(jpg.tobytes())
@@ -427,6 +437,7 @@ def main():
             if config.DASHBOARD:
                 dashboard.add_alerts(alerts)
                 dashboard.set_people(people_states)
+                dashboard.set_phones_seen(count_phones(phones))
                 ok_jpg, jpg = cv2.imencode(".jpg", small)
                 if ok_jpg:
                     dashboard.set_frame(jpg.tobytes())

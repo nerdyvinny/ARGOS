@@ -13,8 +13,8 @@
 #
 # Setup: the antenna sits at the FRONT of the room next to the camera, facing the
 # students, with a metal sheet behind it (see rf_config.py). Order: baseline, fovtest, monitor.
-# "monitor" and "bluetooth" write rf_status.json, which the camera dashboard reads
-# to cross-check close signals with what the camera sees (see camera_confirms below).
+# The camera link reads camera_status.json (see camera_confirms below).
+# Easiest way to run all of this: the Radio panel on the camera dashboard (localhost:5000).
 #
 # "monitor" also checks Bluetooth for headphones in the background.
 # Bluetooth needs Python 3.12, so for that use  py -3.12  instead of  py
@@ -459,36 +459,51 @@ def write_log(rows, history, camera):
                         int(active)])
 
 
-# ---------------- camera link (PLACEHOLDER: not hooked up yet) ----------------
+# ---------------- camera link ----------------
 
 def camera_confirms():
-    # Asks the camera program what it sees. Gives back:
-    #   True  = the camera saw someone with a device in the last few seconds
-    #   False = the camera is running but sees no device
-    #   None  = the camera program is not running (no file, or the file is old)
-    # The camera dashboard (ui/dashboard.py) writes camera_status.json about once a second.
+    # Gives back:
+    #   True  = the camera sees a phone right now
+    #   False = the camera sees no phone in its view
+    #   None  = the camera is not running (no camera_status.json, or it is old)
+    #
+    # The idea: the antenna and camera both face the students, so a phone the
+    # camera can see should also be the one making the RF. If the RF goes up but
+    # the camera sees nothing, the phone is probably outside the camera's view
+    # (behind it, in the hallway, next room) or hidden (pocket, under the desk).
+    #
+    # The camera dashboard (ui/dashboard.py) writes camera_status.json about once a second:
+    #   {"time": 1700000000, "phones_seen": 1}
+    #
+    # Still TODO: when the camera says yes, tell rules/brain.py so that person's
+    # score goes up a little (Person 3's file, ask first).
     try:
         with open(config.CAMERA_STATUS_FILE) as f:
             data = json.load(f)
     except (OSError, ValueError):
-        return None
-    if time.time() - data.get("time", 0) > config.CAMERA_STALE_SECONDS:
-        return None
-    return len(data.get("phone_people", [])) > 0
+        return None                      # camera not running (or the file is half written)
+    if time.time() - data.get("time", 0) > config.CAMERA_STATUS_MAX_AGE:
+        return None                      # camera stopped
+    return data.get("phones_seen", 0) > 0
 
 
-def write_status(active_bands, watcher, radio_on):
-    # Tell the camera program what the radio and Bluetooth hear right now (see rf_config.py).
-    bluetooth = []
+def write_status(sweep_number, rows, history, camera, watcher):
+    # Save what "monitor" found this sweep, so the camera dashboard can show it
+    # and send notifications. Only names and numbers, never pictures or recordings.
+    active = []
+    for r in rows:
+        if band_status(r, history, camera)[1]:
+            active.append({"band": r["band"]["name"], "carriers": r["band"]["carriers"]})
+    headphones = []
+    problem = None
     if watcher is not None:
         for d in watcher.current():
-            bluetooth.append({"address": d["address"], "name": d["name"], "rssi": d["rssi"],
-                              "distance": d["distance"], "why": d["why"]})
-    data = {"time": time.time(), "radio": radio_on, "active_bands": active_bands, "bluetooth": bluetooth}
-    temp = config.RF_STATUS_FILE + ".tmp"       # write then rename, so the reader never sees half a file
-    with open(temp, "w") as f:
-        json.dump(data, f)
-    os.replace(temp, config.RF_STATUS_FILE)
+            headphones.append({"address": d["address"], "name": d["name"],
+                               "distance": d["distance"], "rssi": d["rssi"]})
+        problem = watcher.problem
+    data = {"time": time.time(), "sweep": sweep_number, "active_bands": active,
+            "headphones": headphones, "bt_problem": problem, "camera": camera}
+    rf_web.save_text(config.STATUS_FILE, json.dumps(data, indent=2))
 
 
 # ---------------- fovtest: only count phones in front of the camera ----------------
@@ -641,7 +656,6 @@ def run_bluetooth(simulate, max_scans, web):
             for d in new:
                 print("NEW headphones:", d["name"], "-", d["distance"], "-", d["why"])
             show_bluetooth(watcher)
-            write_status([], watcher, False)
         keep_page_open(address)
     except KeyboardInterrupt:
         print("\nStopped")
@@ -728,7 +742,7 @@ def main():
             else:
                 print("Only counting phones in front of the camera for:", ", ".join(fov))
         if config.CAMERA_CONFIRM:
-            print("CAMERA_CONFIRM is on: bands only count as ACTIVE when the camera also sees a device")
+            print("CAMERA_CONFIRM is on: a band only counts as ACTIVE when the camera does not say 'no phone'")
 
         watcher = None
         if mode == "monitor" and config.BT_CHECK:
@@ -746,11 +760,10 @@ def main():
             for r in rows:
                 name = r["band"]["name"]
                 history[name] = history[name][1:] + [is_suspicious(r, fov)]
-            camera = camera_confirms()
+            camera = camera_confirms()                   # None when the camera isn't running
             print_table(rows, history, sweep_number, camera)
             if mode == "monitor":
-                active_now = [r["band"]["name"] for r in rows if band_status(r, history, camera)[1]]
-                write_status(active_now, watcher, True)
+                write_status(sweep_number, rows, history, camera, watcher)
 
             waterfall.append((time.strftime("%H:%M:%S"), step_heat(steps, now, baseline)))
             waterfall = waterfall[-config.WATERFALL_ROWS:]

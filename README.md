@@ -4,7 +4,7 @@ Anti-Cheating, for teachers.
 ## Exam Watch - 360 camera cheating detector
 
 One wide / 360 camera watches the whole test room.
-It gives every person a color and a score, and sends an alert (with a picture) when someone:
+It gives every person a color and an alert count, and sends an alert (with a picture) when someone:
 
 1. **has a phone out** (phone seen at their desk for a moment, not a single flicker)
 2. **keeps looking at other desks** (turns their head away from *their own normal* for 2+ seconds, 4 times in 5 minutes)
@@ -51,7 +51,7 @@ ARGOS/
   app/main.py            puts it all together (start here)
   capture/camera.py      opens the USB camera (or a video file)
   vision/detector.py     YOLO models + 360 tiles
-  rules/brain.py         cheating rules and scores
+  rules/brain.py         cheating rules and per-person alert counts
   ui/dashboard.py        the web page
   settings/config.py     all the numbers you can tune
   rf_detect/             radio detector: phones transmitting + Bluetooth headphones (see below)
@@ -61,7 +61,7 @@ ARGOS/
 |---|---|
 | `settings/config.py` | All the numbers you can tune |
 | `vision/detector.py` | Runs YOLO: finds people + face points, and phones. Cuts the 360 picture into tiles |
-| `rules/brain.py` | Follows each person and decides who is cheating (head turn math, phone timer, scores) |
+| `rules/brain.py` | Follows each person and decides who is cheating (head turn math, device timer, alert counts) |
 | `ui/dashboard.py` | The web page |
 | `app/main.py` | Puts it all together |
 

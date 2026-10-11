@@ -18,3 +18,19 @@ rf_detect/rf_bluetooth.html
 rf_detect/bt_log.csv
 rf_detect/rf_fov.json
 rf_detect/rf_fov_sim.json
+
+# classroom-vision sandbox (local only, never commit)
+.venv-sandbox/
+models/
+perf/clip/
+perf/frames/
+perf/runs/
+research/labels/frames/
+*.jpg
+*.png
+research/watch_runs/
+kernel.errors.txt
+perf/clip2/
+perf/trace*.csv
+research/labels2/frames/
+*_openvino_model/

@@ -57,7 +57,7 @@ ARGOS/
   ui/dashboard.py        the web page
   settings/config.py     all the numbers you can tune
   tools/setup_desks.py   draw the desk boxes, saves desks.json
-  rf_detect/             RF testing (separate experiment)
+  rf_detect/             radio detector: phones transmitting + Bluetooth headphones (see below)
 ```
 
 | File | What it does |
@@ -68,6 +68,167 @@ ARGOS/
 | `rules/brain.py` | Decides who is cheating (head turn math, phone timer, scores) |
 | `ui/dashboard.py` | The web page |
 | `app/main.py` | Puts it all together |
+
+---
+
+## Radio detector: phones + Bluetooth headphones (`rf_detect/`)
+
+The camera can't see a phone in a pocket or under a desk. But a phone that's being used still **sends radio signals**, and so do wireless earbuds. This part listens for them.
+
+It has two parts:
+
+1. **Cell phone detector.** A cheap USB radio (an RTL-SDR) listens to the frequencies phones use to talk *to* the cell tower. When a phone in the room is in use, the radio power on those frequencies goes up.
+2. **Bluetooth headphone detector.** The laptop's own Bluetooth looks for headphones and earbuds that are switched on nearby.
+
+> It only measures **how much** signal there is. It never decodes, records or listens to anything, so it can't tell what anyone is doing on their phone.
+
+It runs separately from the camera for now. The link between the two is a placeholder (see [Camera link](#camera-link-todo)).
+
+### How it works
+
+**Phones:**
+- First you record the **empty room** (the "baseline"), so the program knows what normal looks like.
+- Then it sweeps through the phone bands over and over (about 15 seconds per sweep) and compares each one to normal.
+- If a band is louder than normal in 2 of the last 5 sweeps, it says **ACTIVE**. One random blip doesn't count.
+
+**Bluetooth:**
+- Headphones that are switched on keep sending short "I'm here" messages. It recognizes:
+  - **AirPods / Beats**, from Apple's status message. They send it while in use, which is how iPhones show their battery.
+  - **Most Android earbuds**, from the Google Fast Pair signal.
+  - **New LE Audio** headphones.
+  - **Headphone-like names**, such as "Buds", "WH-1000XM5", JBL, Bose or Jabra.
+- Signal strength gives a rough distance: very close, in the room, or far.
+
+### Bands it listens to
+
+Phones *transmit* on the "uplink" half of each band, so these are uplink frequencies. 4G and 5G use the same frequencies.
+
+| Band | MHz | Carriers |
+|---|---|---|
+| B71 | 663-698 | T-Mobile, Boost |
+| B12/17 | 699-716 | AT&T, T-Mobile, US Cellular |
+| B13 | 777-787 | Verizon |
+| B14 | 788-798 | AT&T FirstNet |
+| B26 | 817-824 | T-Mobile (old Sprint) |
+| B5 | 824-849 | AT&T, Verizon, US Cellular |
+| B70 | 1695-1710 | Boost (Dish) |
+| B66 | 1710-1765 | AT&T, Verizon, T-Mobile |
+
+Smaller carriers rent the big carriers' networks, so they're covered too. Metro, Mint and Google Fi run on T-Mobile; Visible and Straight Talk on Verizon; Cricket on AT&T.
+
+### What you need
+
+- An **RTL-SDR** USB radio with its antenna. Ours has the R820T tuner, which reaches up to about 1766 MHz.
+- **SDR++** unzipped somewhere. We borrow its `rtlsdr.dll` driver. The folder is set in `RTLSDR_DLL_FOLDER` in `rf_detect/rf_config.py`; by default it's `Downloads\sdrpp_windows_x64`.
+- A laptop with **Bluetooth turned on**: Windows Settings > Bluetooth & devices.
+
+### Setup (Windows cmd)
+
+This part needs **Python 3.12**, so use `py -3.12`. The Bluetooth library doesn't install on Python 3.15 yet.
+
+```
+py -3.12 -m pip install bleak numpy pyrtlsdr==0.2.93 "setuptools<81"
+```
+
+Stick to `pyrtlsdr==0.2.93`: newer versions don't work with the `rtlsdr.dll` that comes with SDR++.
+
+### Run it
+
+Close SDR++ first. Only one program can use the radio at a time.
+
+```
+py -3.12 rf_detect\rf_monitor.py scan
+py -3.12 rf_detect\rf_monitor.py baseline
+py -3.12 rf_detect\rf_monitor.py fovtest
+py -3.12 rf_detect\rf_monitor.py monitor
+py -3.12 rf_detect\rf_monitor.py bluetooth
+```
+
+1. `scan` - one sweep. A good first test that the radio works.
+2. `baseline` - records the **empty room**, with phones off. Redo it if you move the antenna or change rooms.
+3. `fovtest` - the range test, which keeps the alarm to this room (see below).
+4. `monitor` - watches for phones, and checks Bluetooth in the background. Press **Ctrl+C** to stop.
+5. `bluetooth` - Bluetooth only. It doesn't need the RTL-SDR.
+
+Extra options:
+- `--simulate` - a fake radio and fake Bluetooth, to try it with no hardware.
+- `--sweeps 10` - stop after 10 sweeps.
+- `--no-web` - don't open the web page.
+
+The web page opens by itself at `http://localhost:5050` (the camera dashboard is on 5000):
+- `/waterfall` - which phone band is busy, over time (red = louder than normal)
+- `/bluetooth` - headphones switched on nearby, closest first
+
+Output (all in `rf_detect\`; git ignores these files):
+- `rf_log.csv` - every phone sweep
+- `bt_log.csv` - every new headphone seen
+- `rf_baseline.json`, `rf_fov.json` - the empty-room baseline and the range test results
+
+Tests (no hardware needed): `py -3.12 -m unittest tests.test_rf_monitor -v`
+
+### Keeping it to this room
+
+Radio has no "distance" setting. Signals just get weaker with distance and walls. So we limit range by **signal strength**: anything quieter than a phone at the back desk counts as "not in this room".
+
+- **Phones: run `fovtest`.** You need one test phone with Wi-Fi off, on a call or streaming video so it keeps transmitting. Put it in three spots:
+  1. the **farthest desk** the camera can see (should count)
+  2. **behind the camera / antenna** (ignore)
+  3. in the **next classroom** or hallway, right behind the wall (ignore; you can skip this one)
+
+  It sets the alarm level halfway between the quietest "count" spot and the loudest "ignore" spot, for each band. It also says honestly if it can't tell them apart.
+- **Bluetooth: set `BT_MIN_RSSI`** in `rf_config.py`. Put headphones or the JBL speaker in the next room, run `bluetooth`, read the dBm, and set `BT_MIN_RSSI` about 5 higher. For example, the next room shows -88, so set it to -83.
+
+Tips that help a lot (all free or cheap):
+- **Antenna toward the middle of the room**, not in a corner. In a corner, a phone right behind the wall can be closer than your own back desk. A USB extension cable moves the radio without moving the laptop.
+- **Aim the antenna's blind spot.** The RTL-SDR's antenna is nearly deaf off the ends of its rods. Lay the rods pointing at the noisiest neighbor's wall.
+- **Record the baseline while the classes next door are in session**, so their normal activity counts as "normal".
+- **Lower `GAIN`** in `rf_config.py` so far, weak signals disappear. Redo `baseline` and `fovtest` afterwards.
+
+### Camera link (TODO)
+
+The plan: **the radio says *when* a phone is active, and the camera says *which desk*.**
+
+`camera_confirms()` in `rf_detect/rf_monitor.py` is a placeholder; for now it always says "camera not connected". Its comments describe two ways to connect it:
+- `app/main.py` saves what the camera sees to a small file, and the RF monitor reads it.
+- The RF monitor runs inside `app/main.py` and asks it directly.
+
+Once it's connected, set `CAMERA_CONFIRM = True` in `rf_config.py`, and a radio alert will only count when the camera also sees something.
+
+### RF tuning cheat sheet (`rf_detect/rf_config.py`)
+
+- Too many phone false alarms -> run `fovtest`, raise `THRESHOLD_DB` / `PEAK_THRESHOLD_DB`, or raise `CONFIRM_HITS`
+- Missing real phones -> lower `THRESHOLD_DB` / `PEAK_THRESHOLD_DB`, and check the baseline was taken with phones off
+- Sweeps too slow -> set bands nobody uses in your area to `"enabled": False`
+- B70 / B66 show junk numbers -> set them to `"enabled": False` (they're at the very top of what the radio can reach)
+- Headphones from the next room show up -> raise `BT_MIN_RSSI` (for example -85 -> -80)
+- Your own headphones keep showing up -> add their name to `BT_IGNORE_NAMES`
+
+### How we decided (radio)
+
+**1. Decode the signals, or just measure them?**
+- **Decision: only measure power.** Decoding phone traffic is illegal and creepy. "Is there more signal than normal?" is all we need.
+
+**2. Can the radio show *which desk* the phone is at (a heatmap)?**
+- *We tried:* walking the antenna to every desk, and recording a phone at every seat.
+- *Problem:* one antenna only hears **how loud**, not **from where**. Two desks the same distance away sound identical. Each phone also changes its own volume up to 1000x depending on its service.
+- **Decision: dropped it.** The radio answers "is a phone active right now?" and the camera answers "which desk?". It would need 2+ receivers to work.
+
+**3. Measure the time the signal takes to arrive? Add our own transmitter?**
+- *Problem:* you'd need to know when the phone sent the signal, and you can't. Even if you could, the radio's smallest time step (417 ns) is the time light takes to travel 125 m, and the room is 10 m.
+- A transmitter would be radar, and transmitting on phone frequencies without a license is illegal.
+- **Decision: no.** We use signal strength plus the range test instead.
+
+**4. Bluetooth with the RTL-SDR?**
+- *Problem:* Bluetooth is at 2.4 GHz, and the RTL-SDR stops at about 1.77 GHz.
+- **Decision: use the laptop's own Bluetooth.** It sees headphones that are switched on, but not who they're connected to. That link is encrypted, and no laptop can watch it.
+
+### Known limits (radio)
+
+- A phone with **bad service transmits up to 1000x louder** than one with good service. So a loud phone in the next room can sometimes get through. The range test reduces this but can't stop it completely.
+- **Bands above 1.77 GHz are invisible** to the RTL-SDR: PCS 1.9 GHz, T-Mobile 2.5 GHz and 5G C-band 3.7 GHz. A phone using only those bands is missed.
+- A phone in **airplane mode using only Wi-Fi** doesn't use the cell bands at all, so the cell detector can't see it.
+- Headphones that are **off, in their closed case, or wired** can't be seen. People can also rename their headphones.
+- A crowded room, like a hackathon hall, is very noisy. **Run `baseline` at the venue** right before a demo.
 
 ---
 

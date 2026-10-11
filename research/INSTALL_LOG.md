@@ -38,3 +38,11 @@ Python: 3.14.6 (the only Python on this machine), venv created with `py -3.14 -m
 
 ## Added later
 | flask | 3.1.2 | BSD-3-Clause | ~1 MB (+ werkzeug, jinja2, itsdangerous, blinker) | https://pypi.org/project/flask/ | needed by `ui/dashboard.py` so `tests/test_main.py` can import |
+
+## Run 2 (fix/fps-ids-limbs)
+| Package | Version | License | Size | Source | Why / outcome |
+|---|---|---|---|---|---|
+| opencv-python | 4.12.0.88 | Apache-2.0 | ~40 MB | https://pypi.org/project/opencv-python/ | camera MJPG test; did not help, **uninstalled**, back to 5.0.0.93 |
+| openvino | 2025.4.0 | Apache-2.0 | ~40 MB | https://pypi.org/project/openvino/ | GPU driver test; also failed, **uninstalled**, back to 2026.4.1 |
+| (model) yolov8s-worldv2 OpenVINO copy | re-exported locally | AGPL-3.0 (existing model) | 49 MB | made from the existing .pt | added the words "pen" and "sheet of paper" |
+No new models downloaded in run 2.

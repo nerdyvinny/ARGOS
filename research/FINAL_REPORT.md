@@ -1,77 +1,150 @@
-# FINAL REPORT: classroom vision for ARGOS
+# FINAL REPORT: branch fix/fps-ids-limbs
 
-**Outcome: STOPPED at the 3-hour limit, targets NOT met.** One change kept (OpenVINO models), one reverted (tracker).
-Processed FPS went from 0.25 to 0.33 (target 15). Person recall went from 26.9% to 28.0% (target 90%).
-Overlap-test ID switches went from 1.17 to 0.87 per person-minute, which is under the target of 1.
-Unit tests: 28/28 pass on 3 back-to-back runs.
+(The first run's report is kept as `FINAL_REPORT_run1.md`.)
 
-## Final numbers vs baseline (real-time replay of the 5-min classroom clip)
+**Conclusion: much better, but NOT all targets met.** The lag is fixed as far as this hardware allows: the
+picture now shows every frame the camera sends (3.85 fps, up from 0.2) only ~70 ms late (down from 4.9 s).
+Two limits are outside the code: **the camera itself only sends 4 frames per second** (raw mode; MJPG never
+took effect), and **the laptop's only GPU (Intel UHD 620) can't run the models with its 2020 driver**. Both
+need a fix from you (below). Tracking went from 29 numbers to 7-10 for 6 people, but ID switches (1.24-1.55
+per person-minute) and getting the same number back after leaving (0-1 of 3) still miss their targets. Devices
+went from 7% to 36-50% recall and false devices from 30 to 14-20 per 10 minutes, still short of 90% / 1.
+Score is gone; per-person alert counts replace it. Limbs are tracked and drawn per person.
+Unit tests: 38/38 pass.
 
-| Metric | Baseline | Kept (round 1) | Target | Met? |
+## Before and after (clip 2, real-time replay; "after" = 3 back-to-back runs of the final code)
+
+| Target | Goal | Before | After (3 runs) | Met? |
 |---|---|---|---|---|
-| Processed FPS avg / 5th pct | 0.25 / 0.12 | 0.33 / 0.22 | >= 15 | no |
-| Delay ms avg / 95th pct | 3960 / 8065 | 3030 / 4502 | - | - |
-| Person precision / recall | 51.0% / 26.9% | 60.5% / 28.0% | recall >= 90% | no |
-| Person recall near (<2 m) / far (>6 m) | 65.0% / 16.9% | 65.0% / 18.3% | - | - |
-| Phone recall (near) | 33.3% | 53.3% | >= 90% | no |
-| Watch recall (near) | 21.4% | 28.6% | >= 90% | no |
-| Headphones recall (near) | 0% | 7.1% | >= 90% | no |
-| Paper / pen recall | 0% / 0% | 0% / 0% (no such class yet) | >= 90% | no |
-| ID switches per person-minute, whole clip | 0.77 | 0.77 | - | - |
-| ID switches per person-minute, overlap test (145-290 s) | 1.17 | 0.87 | <= 1 | **yes** |
-| Dropout face / eyes / head / pose (near+mid people) | 36.8 / 36.8 / 36.8 / 45.5% | 36.8 / 36.8 / 36.8 / 40.9% | - | - |
-| Alerts | none | 1 phone alert at 300.1 s (flagged for review) | - | - |
+| Display FPS | camera's full rate | 0.2 | 3.85 / 3.85 / 3.85 (camera sends 3.85) | yes (camera max) |
+| Processed FPS avg / p5 | >= 20 / >= 15 | 0.2 / 0.11 | 3.85 / 3.61 every run (only 3.85 frames/s exist); loop capacity 19.5-20.6 / 11.3-11.8 | **no** (camera limit) |
+| Delay (replay, frame to screen) | <= 200 ms live stopwatch | 4,931 avg / 9,191 p95 ms | 70-74 avg / 108-114 p95 ms | replay yes; live stopwatch **not run** |
+| GPU in use, proven | yes | not used | **not used**: trace shows GPU compute 0%, models `openvino:CPU`; GPU compile fails on old driver | **no** (driver) |
+| Numbers / true headcount | <= 1.2 | 29 / 6 = 4.83 | 9, 7, 10 / 6 = 1.50, 1.17, 1.67 | **1 of 3 runs** |
+| ID switches per person-min (overlap) | <= 0.5 | 1.55 | 1.55, 1.24, 1.24 | **no** |
+| Same number after leaving <= 30 s | >= 90% | 0 of 3 | 1, 1, 0 of 3 | **no** |
+| Watch-type false devices per 10 min | <= 1 | 30 | 20, 14, 20 | **no** |
+| Device recall, >= half visible | >= 90% | 7.7% | 53.8%, 38.5%, 46.2% | **no** |
+| Device precision | >= 90% | 6.2% | 41.2%, 41.7%, 37.5% | **no** |
+| Device recall full / half-hidden / edge | report | 0% / 25% / 0% | 44-67% / 25% / 0% (n = 9 / 4 / 1) | reported |
+| People P / R | (keep) | 57% / 26% | 77-82% / 35-37%; near 95%, far 7-10% | improved |
+| Pen recall | (new) | 0% | 38.9% | new |
+| Skeleton bound to every tracked person | yes | not drawn | yes; upper-body point dropout 15.2-16.7%, jitter 0.05-0.07% of person height | yes |
+| Score removed (search) | gone | in 4 files + README | search finds no "score" in app, ui, rules, tests, settings, vision, README | yes |
+| alert_count correct | yes | n/a | unit tests for counting, cooldown and merge pass; not checked against a clip with labeled true alerts | partly |
+| unittest discover | passes | 32 OK | 38 OK | yes |
 
-Reliable distance: no detector reached 90% recall at any distance. The best is near people (< 2 m) at 65%; people beyond ~6 m are found 18% of the time. Items were only tested within ~1.5 m. Distances are estimated from box height (+/- 30%, D9).
+## The 6 bugs: proven cause and fix (details and all experiments in research/FIX_PLAN.md)
 
-## VISION_LOG (full table)
+1. **Lag.** Proven causes: the AI ran in the same loop as the screen (screen updated 0.2/s, picture 4.9 s old);
+   YOLO-World ran on tiles plus close-ups every frame (2.5-2.9 s of each 3.4-4.0 s check); every frame was cut
+   into 3 tiles (pose 63 ms whole picture vs ~480 ms tiles); first-use compile took 18.7 s; the camera sends raw
+   YUY2 at 4.0 fps; no GPU usable (Intel UHD 620, OpenVINO GPU build error on driver 27.20.100.8854; torch is a
+   CPU build). Fixes: threaded loop (camera keeps only newest frame, AI worker with queue size 1, tracker moves
+   people every frame) `app/runtime.py:19-193`, live camera uses it `app/main.py:135-187, 230`; fast detection
+   mode (whole picture once, far tiles every 3rd check, YOLO-World on wrist/head close-ups every 2nd check and the
+   whole picture every 4th, results reused, warm-up of every input size) `vision/detector.py:72-86, 329-370, 371-500`.
+   Now the CPU is the limit: 92% busy, which slows each model ~3-4x vs the idle bench.
+2. **Tracking.** Proven causes: IoU-only matching across slow checks, a number on the first frame, numbers
+   retired after 10 s, body-part boxes becoming "people", far people counted as missed on checks that never
+   looked at them, and re-link colours taken from the wrong area (seated vs walking 0.53 vs stranger 0.55).
+   Fix kept: `vision/tracker.py:115-360` (optical flow between checks, 3 sightings before a number, 2-pass
+   matching, 45 s lost pool with re-link by position, size and clothes colours, merge keeps the older number,
+   events to the trace), brain uses tracker numbers `rules/brain.py:99-113`. Three further tracker changes were
+   tried and dropped (FIX_LOG rounds 3a-3c).
+3. **Watch false positives.** Proven cause: YOLO-World "smartwatch" boxes on wrists/hands with no confirmation
+   (30 per 10 min). Fix: one `device` class with 2-of-3-checks confirmation and watch size/shape/near-wrist checks
+   `vision/devices.py:44-110`, switch `settings/config.py:81`. Result 14-20 per 10 min.
+4. **Partial phones.** Proven: half-hidden 25%, edge 0% recall (n = 4 and 1). Fix: phone model also runs on
+   wrist close-ups (`vision/detector.py:453-500`). No fine-tuning (time); still the weakest spot.
+5. **Score.** `score = looks + 2 x long looks + 5 x phone alerts` removed everywhere; `alert_count` +1 per alert
+   event `rules/brain.py:37, 186`, `merge_people` `rules/brain.py:191-207`, dashboard `ui/dashboard.py:40, 89`,
+   summary `app/main.py` (per person + total), README lines 7, 54, 64, tests `tests/test_brain.py`.
+6. **Limbs.** Cause: body points were never bound to a person or drawn. Fix: tracker binds and smooths them
+   (One Euro filter `vision/tracker.py:79-112`), app draws the skeleton in the person's colour
+   `app/main.py:29-38` and in `draw()`.
 
-| Round | Change | Video | FPS avg / p5 | Person P / R | Item recall (phone, watch, headph., paper, pen) | ID sw / p-min (overlap) | Dropout face/eyes/head/pose | Alerts | Result |
-|---|---|---|---|---|---|---|---|---|---|
-| 0 | Baseline | - | 0.25 / 0.12 | 51.0 / 26.9% | 33.3, 21.4, 0, 0, 0% | 0.77 (1.17) | 36.8/36.8/36.8/45.5% | none | baseline |
-| 1 | OpenVINO copies of all 3 models | V4 (06:53, 08:01), V5 (05:10) | 0.33 / 0.22 | 60.5 / 28.0% | 53.3, 28.6, 7.1, 0, 0% | 0.77 (0.87) | 36.8/36.8/36.8/40.9% | phone @300 s | **kept**, commit ec40882 |
-| 2a | Tracker + AI every 4th frame | V6 (04:53-07:43), V8 (01:01-02:05) | 1.22 / 0.29 | - / 0% | 0% | 0 (0) | 100% | none | bug (everyone hidden after a slow AI check), fixed -> 2b |
-| 2b | Same, fixed | V6, V8 | 1.32 / 0.31 | 63.3 / 33.3% | 0% (items only on AI-check frames) | 0.58 (0.73) | 21.1/26.3/21.1/31.8% | none | **reverted**: items lost and round 1's phone alert stopped firing; patch in `research/round2_tracker.patch` |
+Alert mapping (planned): the old "phone" alert is now "device" (`rules/brain.py:217`), firing on the same
+things as before; paper and pen never alert (`rules/brain.py:300`). No thresholds changed.
 
-## Kept change and where it came from
-- **Round 1, OpenVINO** (videos 4 and 5: export to a CPU-optimised format). `vision/detector.py:20-27` (setting), `:48-53` (`fast_copy`), `:56-66` (`load_models` uses the OpenVINO folder, skips `set_classes` for the baked YOLO-World copy). New `tools/export_openvino.py` makes the copies. Falls back to the `.pt` files when no copy exists, so other laptops behave as before.
+## perf/FIX_LOG.md
 
-## Files changed on the branch (vs origin/main 95f7811)
-- `vision/detector.py` (OpenVINO loading, see above)
-- `tools/export_openvino.py` (new)
-- `perf/eval_vision.py` (new test harness), `perf/record_classroom.py` (new 5-min recorder), `perf/peek_frames.py` (new), `perf/VISION_LOG.md` (new)
-- `research/` : `video_notes.md`, `PLAN.md`, `DECISIONS.md`, `INSTALL_LOG.md`, `FINAL_REPORT.md`, `round2_tracker.patch`, `labels/teacher.py`, `labels/build_gt.py`, `labels/review.json`, `labels/gt.json`, `labels/teacher.json` (box numbers only, no images)
-- `.gitignore` (sandbox folders, clips, frames, models, images)
-No images of people, clips, models or logs are committed.
+| Round | Change | Bug | Display | AI/s | Delay avg/p95 | People P/R | Device P/R | FP/10min | Num/person | IDSW | Return | Limb drop | Result |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | Baseline | - | 0.2 | 0.2 | 4931 / 9191 | 57% / 26% | 6% / 7% | 30 | 4.83 | 1.55 | 0/3 | n/a | baseline |
+| 1 | Threaded loop + tracker + alert_count | 1,2,5 | 3.85 | 0.31 | 66 / 92 | 55% / 26% | 36% / 36% | 18 | 1.00 | 0.62 | 1/3 | 42% | kept |
+| 2a | Fast detection | 1 | 3.85 | 0.93 | 62 / 85 | 80% / 31% | 43% / 21% | 8 | 1.50 | 0.62 | 1/3 | 20% | reverted |
+| 2b | + reuse YOLO-World results | 1 | 3.85 | 0.95 | 62 / 82 | 91% / 29% | 33% / 43% | 24 | 1.17 | 0.93 | 0/3 | 21% | reverted |
+| 2c | + far people not missed when far band unchecked | 1,2 | 3.85 | 0.96 | 69 / 102 | 80% / 37% | 40% / 43% | 18 | 1.17 | 0.93 | 2/3 | 16% | kept (exception) |
+| 3a | Shirt colours + unsure revive | 2 | 3.85 | 0.93 | 75 / 110 | 72% / 35% | 37% / 50% | 24 | 1.67 | 0.93 | 0/3 | 19% | reverted |
+| 3b | Body-part filter + unsure revive | 2 | 3.85 | 1.16 | 75 / 113 | 71% / 34% | 37% / 50% | 24 | 1.17 | 0.62 | 1/3 | 18% | reverted |
+| 3c | Shirt colours + body-part filter | 2 | 3.85 | 1.12 | 78 / 121 | 75% / 37% | 44% / 50% | 18 | 1.67 | 0.93 | 2/3 | 17% | reverted, idea dropped |
+| 4 | Device confirmation + watch checks + pen/paper words | 3,4 | 3.85 | 1.10 | 76 / 123 | 80% / 37% | 44% / 50% | 18 | 1.17 | 1.24 | 0/3 | 17% | kept |
+| 5 | Skeleton per person colour + tracker tests | 6 | 3.85 | 1.11 | 74 / 113 | 80% / 37% | 41% / 50% | 20 | 1.50 | 1.55 | 1/3 | 17% | kept |
 
-## Installed / downloaded (all inside `C:\Users\vobic\ARGOS-vision`, details in INSTALL_LOG.md)
-- PyPI, pinned, into `.venv-sandbox`: ultralytics 8.4.175 (AGPL, already the project's library), torch 2.14.1, torchvision 0.29.1, opencv-python 5.0.0.93, numpy 2.5.4, openvino 2026.4.1 (telemetry opted out), transformers 5.19.0, lap 0.5.13, flask 3.1.2, yt-dlp 2026.8.19, ffmpeg-binaries 1.1.0 (+ their dependencies).
-- Models in `models\`: the 3 existing project models copied from the main checkout (AGPL, already used by ARGOS); `PekingU/rtdetr_v2_r50vd` (Apache-2.0, 172 MB) used only to help draw ground-truth boxes; OpenVINO copies made locally.
+Rounds 4 and 5 use the same tracker code as 2c; their tracking spread is run-to-run noise (see FIX_LOG note).
 
-## Decisions (full list in DECISIONS.md)
-D1 asked once whether to run, then recorded first. D3 Gemini watch engine was overloaded, used the local engine. D5 existing AGPL models kept for the baseline, new downloads permissive only. D7 the clip came out at 3.85 fps. D8 ground truth = helper model + my eye check. D9 metres are estimates. D11 in-between keep rule (FPS can't jump to 15 in one step). D12 real-time replay harness. D14 round 2 reverted. D16 no alert thresholds touched.
+## Commits on fix/fps-ids-limbs (local only)
+- 526917e fix: threaded live loop, session tracker, alert_count instead of score
+- 4450f25 perf: fast detection mode
+- f3ea5a2 fix: confirm devices over 2 of 3 AI checks, watch sanity checks, pen/paper words
+- 2e97590 feat: draw each person's skeleton in their own colour; tracker unit tests
+- (docs commit with this report)
+
+Files changed vs the start of the branch: 24 files, +1,903 / -29 lines. App code: `app/main.py`, `app/runtime.py`
+(new), `app/trace.py` (new), `vision/detector.py`, `vision/tracker.py` (new), `vision/devices.py` (new),
+`rules/brain.py`, `ui/dashboard.py`, `settings/config.py:79-83`, `README.md`. Tests: `tests/test_brain.py`,
+`tests/test_main.py`, `tests/test_tracker.py` (new). Measuring tools: `perf/record_clip2.py`, `perf/camera_probe.py`,
+`perf/bench_models.py`, `perf/replay_live.py`, `perf/score2.py`, `perf/eval_vision.py`. Labels (box numbers only):
+`research/labels2/review.json`, `research/labels2/gt.json`.
+
+## Installed / downloaded in this run (research/INSTALL_LOG.md)
+- opencv-python 4.12.0.88 (tried for the camera, uninstalled; back to 5.0.0.93)
+- openvino 2025.4.0 (tried for the GPU, uninstalled; back to 2026.4.1)
+- YOLO-World OpenVINO copy re-exported locally with the words "pen" and "sheet of paper"
+- No new models downloaded. Everything inside `C:\Users\vobic\ARGOS-vision`; sandbox size 3.0 GB.
+
+## Decisions (research/DECISIONS.md, run 2 section)
+D-R0 recorded a new clip as asked. D-R1 camera stuck at 4 fps, MJPG idea dropped after 3 failures (Media
+Foundation not tried: could open the laptop camera). D-R2 GPU blocked by the driver. D-R3 processed-FPS target
+impossible with a 4 fps camera; loop capacity reported instead. D-R4 round 2 kept on attempt 3 with logged
+exceptions. D-R5 tracker changes dropped after 3 failures. D-R6 phone/watch alert is now "device"; paper/pen
+never alert. D-R7 video files keep the old loop. D-R8 false-device rate estimated from 25 checked frames.
+D-R9 no fine-tuning. D-R10 live stopwatch test not run.
 
 ## What still fails and why
-1. **Speed.** The full pipeline (pose + phone + YOLO-World on 3 tiles plus head/wrist close-ups) takes ~3 s per frame even with OpenVINO on this 4-core CPU. 15 FPS needs the AI to run on a fraction of frames (round 2 did this and got 4x) and a slimmer AI pass: one full-frame pass instead of 3 tiles, close-ups only every few frames.
-2. **Items vanish between AI checks** (why round 2 was reverted). Next step: hold each item's last box until the next AI check. That is a small change on top of `research/round2_tracker.patch`.
-3. **Paper and pen are not detected at all.** No model in the project knows these classes. The next steps were adding "pen" and "sheet of paper" to the YOLO-World words (and re-exporting), or fine-tuning on frames from a separate clip.
-4. **Far people (> 6 m) found 18% of the time.** The background students are 40-70 px tall; the 3-tile layout also crops the top 20% and bottom 15% of the frame (set for a 360 camera, `settings/config.py` CROP_TOP/CROP_BOTTOM), which on this wide camera throws away the desk.
-5. **Face/eyes/head data missing 37% of the time** for near people facing the camera. Face landmarks (video 3, MediaPipe) were planned but not reached.
-6. **Not built:** item-to-hand linking and "phone in hand" / "headphones on" review events, gaze, the per-person face/eye/limb tracking requirement beyond what YOLO pose gives.
-7. **Test limits.** One recorded clip, only one person who moves, ground truth on 27 frames, and hand-drawn item boxes. Treat every percentage as approximate (e.g. 15 phone instances).
+- **15-30 fps**: the Arducam sends raw YUY2 at 4 fps. Try a USB 3 port and check in the Windows Camera app or
+  AMCap whether it offers MJPG 1080p30; the old perf log measured 30 fps on this camera.
+- **GPU**: update the Intel UHD Graphics 620 driver (Intel Driver & Support Assistant, or HP's support page for
+  this laptop), then run `.\.venv-sandbox\Scripts\python.exe perf\bench_models.py`. The UHD 620 is an integrated
+  chip; expect a modest gain, not a big one.
+- **CPU is full (92%)**: with 3.85 frames/s the AI manages ~1 check per second. Smaller inputs or dropping
+  YOLO-World would raise that but cost recall.
+- **Tracking targets**: ID switches 1.24-1.55 per person-minute and 0-1 of 3 returns. Shirt-only colours are
+  proven better on single frames (0.68-0.91 vs a stranger's 0.14) but didn't pass the replay gate. A longer
+  clip with more returns is needed to tell a real gain from noise.
+- **Devices**: half-hidden phones 25%, phone at the frame edge 0% (only 4 and 1 examples). Needs fine-tuning on
+  frames from a separate clip with occlusion and edge-cut augmentation.
+- **Headphones and paper**: 0% recall on this clip.
+- **Far people** (> 6 m): found 7-10% of the time.
+- **Test limits**: one 5-min clip, one person moving, 25 checked frames; small counts (14 devices, 3 returns).
 
-## Commands for you to review and merge (PowerShell)
+## Commands for you (PowerShell)
+Review:
 ```powershell
-cd C:\Users\vobic\ARGOS-vision; git log --oneline main..feat/classroom-vision
+cd C:\Users\vobic\ARGOS-vision; git log --oneline feat/classroom-vision..fix/fps-ids-limbs
 ```
 ```powershell
-cd C:\Users\vobic\ARGOS-vision; git diff 95f7811..feat/classroom-vision --stat
+cd C:\Users\vobic\ARGOS-vision; git diff feat/classroom-vision..fix/fps-ids-limbs --stat
 ```
 ```powershell
 cd C:\Users\vobic\ARGOS-vision; .\.venv-sandbox\Scripts\python.exe -m unittest discover -s tests
 ```
-To merge it yourself (I did not merge or push):
+Live stopwatch delay test (set `SHOW_STOPWATCH = True` in settings\config.py, point the Arducam at a phone stopwatch next to the screen, compare the two times in a photo):
 ```powershell
-cd C:\Users\vobic\ARGOS; git fetch origin; git checkout main; git pull --rebase; git merge --no-ff feat/classroom-vision
+cd C:\Users\vobic\ARGOS-vision; .\.venv-sandbox\Scripts\python.exe -m app.main
 ```
-To try the reverted tracker: `git apply research\round2_tracker.patch` inside the worktree.
+Merge yourself (I did not merge or push). This branch includes feat/classroom-vision:
+```powershell
+cd C:\Users\vobic\ARGOS; git fetch origin; git checkout main; git pull --rebase; git merge --no-ff fix/fps-ids-limbs
+```

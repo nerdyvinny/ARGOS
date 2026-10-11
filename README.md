@@ -78,7 +78,7 @@ It has two parts:
 
 > It only measures **how much** signal there is. It never decodes, records or listens to anything, so it can't tell what anyone is doing on their phone.
 
-It runs separately from the camera for now. The link between the two is a placeholder (see [Camera link](#camera-link-todo)).
+You can start it from the camera dashboard (see [Run it from the dashboard](#run-it-from-the-dashboard-easiest)), or run it on its own from cmd.
 
 ### Picture of what the radio does
 
@@ -195,15 +195,30 @@ Tips that help a lot (all free or cheap):
 - **Record the baseline while the classes next door are in session**, so their normal activity counts as "normal".
 - **Lower `GAIN`** in `rf_config.py` so far, weak signals disappear. Redo `baseline` afterwards.
 
-### Camera link (TODO)
+### Run it from the dashboard (easiest)
+
+Start the camera app (`python -m app.main`) and open `http://localhost:5000`. The **Radio detector** box on the right has three buttons. Click them in order:
+
+1. **Scan** - checks the radio works
+2. **Baseline** - empty room, phones OFF
+3. **Monitor** - watches for phones and Bluetooth headphones until you press **Stop**
+
+Tick **Practice mode** to use the fake radio when you have no hardware. **Radio output** shows what the radio program prints.
+
+The **Notifications** list on the side gets a text message (no pictures) when:
+- the camera sees a phone at someone's desk (orange)
+- a phone band turns ACTIVE on the radio (red)
+- new Bluetooth headphones show up (blue)
+
+The dashboard runs `py -3.12 rf_detectf_monitor.py ...` for you, so Python 3.12 with the radio packages must still be installed (see Setup above).
+
+### Camera link
 
 The plan: **the radio says *when* a phone is active, and the camera says *which person*.**
 
-`camera_confirms()` in `rf_detect/rf_monitor.py` is a placeholder; for now it always says "camera not connected". Its comments describe two ways to connect it:
-- `app/main.py` saves what the camera sees to a small file, and the RF monitor reads it.
-- The RF monitor runs inside `app/main.py` and asks it directly.
+About once a second the camera dashboard writes `camera_status.json` (the time and how many phones it sees). `camera_confirms()` in `rf_detect/rf_monitor.py` reads that file. An ACTIVE band then says "(camera agrees)" when the camera also sees a phone. If the camera isn't running, the radio works the same as before.
 
-Once it's connected, set `CAMERA_CONFIRM = True` in `rf_config.py`, and a radio alert will only count when the camera also sees something.
+Set `CAMERA_CONFIRM = True` in `rf_config.py` to ignore radio alerts when the camera sees no phone. Careful: a phone in a pocket or under a desk makes radio signal, but the camera can't see it.
 
 ### RF tuning cheat sheet (`rf_detect/rf_config.py`)
 

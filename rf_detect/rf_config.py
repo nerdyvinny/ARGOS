@@ -70,14 +70,22 @@ FOV_TEST_SWEEPS = 5          # sweeps measured at each test spot
 FOV_FILE = os.path.join(FOLDER, "rf_fov.json")
 SIM_FOV_FILE = os.path.join(FOLDER, "rf_fov_sim.json")      # used with --simulate
 
-# ---------- camera link (PLACEHOLDER: not hooked up yet) ----------
-CAMERA_CONFIRM = False       # True = only say ACTIVE when the camera also sees something
+# ---------- camera link ----------
+# The camera dashboard (ui/dashboard.py) writes camera_status.json about once a second:
+# how many phones the camera sees right now. camera_confirms() in rf_monitor.py reads it.
+CAMERA_STATUS_FILE = os.path.join(FOLDER, "..", "camera_status.json")
+CAMERA_STATUS_MAX_AGE = 5    # older than this many seconds = camera stopped, so "not linked"
+CAMERA_CONFIRM = False       # True = only say ACTIVE when the camera also sees a phone
+                             # (careful: a phone in a pocket makes RF but the camera can't see it)
 CAMERA_FOV_DEGREES = 120     # how wide the camera sees. Only used as a note for now.
 
 # ---------- web page (shown at http://localhost:5050) ----------
 WEB_PORT = 5050              # not 5000, that one is the camera dashboard
 WATERFALL_FILE = os.path.join(FOLDER, "rf_waterfall.html")   # live: frequency vs time
 WATERFALL_ROWS = 60          # how many sweeps (rows) the waterfall remembers
+
+# "monitor" writes what it found after every sweep here, for the camera dashboard (localhost:5000)
+STATUS_FILE = os.path.join(FOLDER, "rf_status.json")
 HEAT_MAX_DB = 12.0           # this many dB above normal (or more) shows as full red
 
 # ============================================================

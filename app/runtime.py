@@ -157,7 +157,7 @@ def run(source, detector, brain, tracker, devices, trace=None, show=None, on_fra
                 if fresh:
                     r_index, r_time, found_people, found_items, det_stages = result
                     stages.update(det_stages)
-                    tracker.update(found_people, now)
+                    tracker.update(found_people, now, det_stages.get("far_checked", 1) == 1)
                     devices.update(found_items, tracker.current(), now)
                 for kept, gone in tracker.take_merges():
                     brain.merge_people(people_states, "Person " + str(kept), "Person " + str(gone))

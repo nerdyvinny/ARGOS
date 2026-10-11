@@ -63,7 +63,21 @@ def load_models():
         world_model = YOLO(world_file, task="detect")
         if world_file == WORLD_MODEL:
             world_model.set_classes(list(WORLD_WORDS.keys()))   # the OpenVINO copy already has the words
+    warm_up()
     print("Models loaded")
+
+
+def warm_up():
+    # OpenVINO builds its program the first time it sees each input size (the first real
+    # check took 18.7 s without this). Run every size the fast mode uses once, on blank pictures.
+    shapes = [((config.CAMERA_HEIGHT, config.CAMERA_WIDTH), config.IMAGE_SIZE),
+              ((config.CAMERA_HEIGHT // 2, config.CAMERA_WIDTH // 2 + config.CAMERA_WIDTH // 20), config.IMAGE_SIZE),
+              ((200, 200), 320)]
+    for m in [pose_model, object_model, world_model]:
+        if m is None:
+            continue
+        for (h, w), size in shapes:
+            m(np.zeros((h, w, 3), dtype=np.uint8), imgsz=size, verbose=False)
 
 
 def make_tiles(frame):
@@ -315,6 +329,8 @@ def detect_raw(frame, stages):
     # Gives back (people detections, item detections); the tracker and the device memory
     # turn these into numbered people and steady items.
     from app.trace import Timer
+    if DETECT_MODE == "fast":
+        return detect_fast(frame, stages)
     with Timer(stages, "resize"):
         tiles = make_tiles(frame)
     with Timer(stages, "pose"):
@@ -345,3 +361,130 @@ def model_devices():
         else:
             out[name] = "torch:" + str(getattr(backend, "device", "cpu"))
     return out
+
+
+# ---------------- fast mode: no tiles every frame, slow models only where and when needed ----------------
+# (bench on this laptop: full-frame pose 63 ms vs 3 tiles 295-480 ms; YOLO-World was ~75% of each check)
+
+DETECT_MODE = getattr(config, "DETECT_MODE", "fast")      # "fast" (normal camera) or "tiles" (360 camera)
+LOW_PERSON_CONFIDENCE = 0.25    # unsure people are passed on so the tracker can keep someone alive
+FAR_EVERY = 3                   # far-away band tiles: every 3rd AI check (seated people barely move)
+FAR_BAND = (0.25, 0.75)         # part of the picture height where far people are
+FAR_MAX_HEIGHT = 0.3            # people from the far tiles are kept only if smaller than this x picture height
+WORLD_CROPS_EVERY = 2           # YOLO-World on wrist/head close-ups: every 2nd AI check
+WORLD_FULL_EVERY = 4            # YOLO-World on the whole picture (headphones, paper...): every 4th check
+CROP_SIZE = 320                 # close-ups are small, so the models look at them at 320
+fast_count = 0
+last_world_crops = []           # YOLO-World results are reused on the checks where it doesn't run
+last_world_full = []
+far_checked = [True]            # did the last check look at the far tiles? (read by the loop)
+
+
+def result_people(r, ox, oy, tile):
+    people = []
+    if r.boxes is None or len(r.boxes) == 0:
+        return people
+    boxes = r.boxes.xyxy.cpu().numpy()
+    confs = r.boxes.conf.cpu().numpy()
+    kpts = r.keypoints.data.cpu().numpy() if r.keypoints is not None else None
+    for j in range(len(boxes)):
+        b = boxes[j]
+        points = []
+        if kpts is not None and j < len(kpts):
+            points = [[float(p[0] + ox), float(p[1] + oy), float(p[2]) if len(p) >= 3 else 1.0] for p in kpts[j]]
+        people.append({"box": [float(b[0] + ox), float(b[1] + oy), float(b[2] + ox), float(b[3] + oy)],
+                       "conf": float(confs[j]), "points": points, "tile": tile})
+    return people
+
+
+def result_things(r, ox, oy, label_of):
+    things = []
+    if r.boxes is None or len(r.boxes) == 0:
+        return things
+    boxes = r.boxes.xyxy.cpu().numpy()
+    confs = r.boxes.conf.cpu().numpy()
+    classes = r.boxes.cls.cpu().numpy()
+    for j in range(len(boxes)):
+        label = label_of(int(classes[j]))
+        if label is None and label_of is not world_label:
+            continue
+        b = boxes[j]
+        things.append({"box": [float(b[0] + ox), float(b[1] + oy), float(b[2] + ox), float(b[3] + oy)],
+                       "conf": float(confs[j]), "label": label, "tile": None})
+    return things
+
+
+def world_label(c):
+    words = list(WORLD_WORDS.keys())
+    return WORLD_WORDS[words[c]] if c < len(words) else None
+
+
+def far_tiles(frame):
+    h, w = frame.shape[:2]
+    y1, y2 = int(h * FAR_BAND[0]), int(h * FAR_BAND[1])
+    half = w // 2
+    extra = int(half * 0.1)
+    return [(0, y1, np.ascontiguousarray(frame[y1:y2, 0:half + extra])),
+            (half - extra, y1, np.ascontiguousarray(frame[y1:y2, half - extra:w]))]
+
+
+def find_people_fast(frame):
+    global fast_count
+    h = frame.shape[0]
+    far_checked[0] = False
+    r = pose_model(frame, conf=LOW_PERSON_CONFIDENCE, imgsz=config.IMAGE_SIZE, verbose=False)[0]
+    people = result_people(r, 0, 0, 0)
+    if fast_count % FAR_EVERY == 0:
+        far_checked[0] = True
+        tiles = far_tiles(frame)
+        results = pose_model([t[2] for t in tiles], conf=LOW_PERSON_CONFIDENCE, imgsz=config.IMAGE_SIZE, verbose=False)
+        for i in range(len(results)):
+            for p in result_people(results[i], tiles[i][0], tiles[i][1], i + 1):
+                if p["box"][3] - p["box"][1] > FAR_MAX_HEIGHT * h:
+                    continue
+                if any(overlap_of_smaller(p["box"], q["box"]) > 0.5 for q in people):
+                    continue
+                people.append(p)
+    return people
+
+
+def detect_fast(frame, stages):
+    global fast_count
+    from app.trace import Timer
+    with Timer(stages, "pose"):
+        people = find_people_fast(frame)
+    sure_people = [p for p in people if p["conf"] >= config.PERSON_CONFIDENCE]
+    squares = close_up_squares(sure_people)
+    crops = []
+    for sq in squares:
+        piece, ox, oy = cut_square(frame, sq)
+        if piece is not None:
+            crops.append((ox, oy, piece))
+    with Timer(stages, "objects"):
+        r = object_model(frame, conf=config.PHONE_CONFIDENCE, imgsz=config.IMAGE_SIZE,
+                         classes=[config.PHONE_CLASS_ID], verbose=False)[0]
+        phones = result_things(r, 0, 0, lambda c: "phone")
+        if crops:
+            rs = object_model([c[2] for c in crops], conf=config.PHONE_CONFIDENCE, imgsz=CROP_SIZE,
+                              classes=[config.PHONE_CLASS_ID], verbose=False)
+            for c, rr in zip(crops, rs):
+                phones = phones + result_things(rr, c[0], c[1], lambda k: "phone")
+    global last_world_crops, last_world_full
+    if WORLD_CHECK and world_model is not None:
+        with Timer(stages, "world"):
+            if fast_count % WORLD_FULL_EVERY == 0:
+                rr = world_model(frame, conf=WORLD_CONFIDENCE, imgsz=config.IMAGE_SIZE, verbose=False)[0]
+                last_world_full = result_things(rr, 0, 0, world_label)
+            if fast_count % WORLD_CROPS_EVERY == 0:
+                last_world_crops = []
+                if crops:
+                    rs = world_model([c[2] for c in crops], conf=WORLD_CONFIDENCE, imgsz=CROP_SIZE, verbose=False)
+                    for c, rr in zip(crops, rs):
+                        last_world_crops = last_world_crops + result_things(rr, c[0], c[1], world_label)
+    found = last_world_full + last_world_crops
+    devices = [t for t in found if t["label"] is not None]
+    not_devices = [t for t in found if t["label"] is None]
+    phones = remove_doubles_per_label(drop_fake_phones(phones, not_devices) + devices)
+    stages["far_checked"] = 1 if far_checked[0] else 0
+    fast_count = fast_count + 1
+    return people, phones

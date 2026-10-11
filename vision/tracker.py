@@ -25,7 +25,8 @@ FLOW_WIDTH = 640           # optical flow runs on a small copy of the picture
 FLOW_POINTS = 25           # corner points followed inside each box
 MATCH_IOU = 0.25           # boxes must overlap this much to be the same person
 CONFIRM_HITS = 3           # sightings before a new person gets a number
-TENTATIVE_SECONDS = 2.0    # a not-yet-confirmed person missing this long is dropped
+TENTATIVE_SECONDS = 8.0    # a not-yet-confirmed person missing this long is dropped (far people are checked every ~3 s)
+SMALL_PERSON = 0.3         # boxes shorter than this x picture height are 'far' people
 LOST_SECONDS = 45.0        # a numbered person is remembered this long after leaving
 REVIVE_DISTANCE = 2.5      # a returning person may be this many box heights from where they left
 REVIVE_SIZE = (0.5, 2.0)   # ...with a box height between half and double the old one
@@ -127,6 +128,7 @@ class Tracker:
         self.frame = None
         self.scale = 1.0
         self.merges = []           # (kept number, merged number) pairs for the brain
+        self.far_checked = True
 
     # ---------- every picture ----------
 
@@ -167,7 +169,10 @@ class Tracker:
 
     # ---------- when the AI looked ----------
 
-    def update(self, people, now):
+    def update(self, people, now, far_checked=True):
+        # far_checked: did this AI check look closely at the far band? If not, far people
+        # it didn't see are not counted as missed (they were simply not looked for).
+        self.far_checked = far_checked
         sure = [p for p in people if p["conf"] >= self.new_confidence]
         unsure = [p for p in people if p["conf"] < self.new_confidence]
         left = self.match(sure, self.active, now)
@@ -273,6 +278,9 @@ class Tracker:
             if t["seen"] == now:
                 keep.append(t)
                 continue
+            if not self.far_checked and self.is_small(t):
+                keep.append(t)
+                continue
             t["misses"] += 1
             if t["number"] is None:
                 if now - t["seen"] <= TENTATIVE_SECONDS:
@@ -285,6 +293,11 @@ class Tracker:
                 keep.append(t)
         self.active = keep
         self.lost = [t for t in self.lost if now - t["seen"] <= LOST_SECONDS]
+
+    def is_small(self, t):
+        if self.frame is None:
+            return False
+        return t["box"][3] - t["box"][1] < SMALL_PERSON * self.frame.shape[0]
 
     def merge_doubles(self, now):
         numbered = [t for t in self.active if t["number"] is not None]

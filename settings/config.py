@@ -78,6 +78,6 @@ OPEN_BROWSER = True              # open the web page in your browser by itself w
 
 # ---------- speed / threaded loop ----------
 DETECT_MODE = "fast"             # "fast": whole picture + close-ups (normal wide camera); "tiles": the 360 layout above
-DEVICE_CONFIRM = False           # device must be seen in 2 of the last 3 AI checks (+ watch size/shape checks)
+DEVICE_CONFIRM = True            # device must be seen in 2 of the last 3 AI checks (+ watch size/shape checks)
 TRACE = True                     # write perf/trace.csv (time per stage, devices, CPU/GPU use, tracker events)
 SHOW_STOPWATCH = False           # draw a clock on the picture for the delay test

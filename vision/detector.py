@@ -40,6 +40,8 @@ WORLD_WORDS = {
     "headphones": "headphones",
     "name tag": None,
     "id card": None,
+    "pen": "pen",                 # reported, never alerted on (see rules/brain.py NOT_ALERT_ITEMS)
+    "sheet of paper": "paper",
 }
 HEAD_POINTS = [0, 1, 2, 3, 4]   # nose, eyes, ears
 WRISTS = [9, 10]

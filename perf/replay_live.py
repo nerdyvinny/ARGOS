@@ -41,7 +41,8 @@ def main():
     from app.trace import Trace
     from app import main as app_main
 
-    detector.load_models()
+    if not getattr(config, "AI_PROCESS", False):
+        detector.load_models()   # (with AI_PROCESS the AI process loads its own copy)
     times = json.load(open(CLIP + "_times.json"))
     if args.seconds:
         times = [t for t in times if t <= args.seconds]
@@ -62,8 +63,13 @@ def main():
         app_main.resize_to_width(drawn, 1280)
         return True
 
+    # start the AI first: in its own process it loads the models (1-2 min); starting the clip before
+    # that skipped the first ~2 minutes of the clip and halved every score
+    worker = runtime.make_worker(detector)
+    worker.start()
     source.start()
-    runtime.run(source, detector, brain, tracker, devices, trace=trace, show=show, on_frame=on_frame)
+    runtime.run(source, detector, brain, tracker, devices, trace=trace, show=show, on_frame=on_frame,
+                worker=worker)
     trace.devices = detector.model_devices()
     trace.close()
     meta = {"camera_fps": len(times) / times[-1], "model_devices": detector.model_devices(),

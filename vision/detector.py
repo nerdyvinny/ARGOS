@@ -16,9 +16,14 @@
 #   thinks is a phone gets thrown out.
 #   Turn it off with WORLD_CHECK = False in settings/config.py.
 
+import os
 import numpy as np
 from ultralytics import YOLO
 from settings import config
+
+# OpenVINO copies of the models run 2-3x faster on an Intel CPU (make them with tools\export_openvino.py).
+# When a "<name>_openvino_model" folder is next to the .pt file we use it, otherwise the .pt file.
+USE_OPENVINO = getattr(config, "USE_OPENVINO", True)
 
 pose_model = None
 object_model = None
@@ -40,14 +45,24 @@ HEAD_POINTS = [0, 1, 2, 3, 4]   # nose, eyes, ears
 WRISTS = [9, 10]
 
 
+def fast_copy(name):
+    # gives back the OpenVINO folder for this model if it was made, else the .pt name
+    folder = name.replace(".pt", "_openvino_model")
+    if USE_OPENVINO and os.path.isdir(folder):
+        return folder
+    return name
+
+
 def load_models():
     global pose_model, object_model, world_model
     print("Loading AI models (first time it downloads them)...")
-    pose_model = YOLO(config.POSE_MODEL)
-    object_model = YOLO(config.OBJECT_MODEL)
+    pose_model = YOLO(fast_copy(config.POSE_MODEL), task="pose")
+    object_model = YOLO(fast_copy(config.OBJECT_MODEL), task="detect")
     if WORLD_CHECK:
-        world_model = YOLO(WORLD_MODEL)
-        world_model.set_classes(list(WORLD_WORDS.keys()))
+        world_file = fast_copy(WORLD_MODEL)
+        world_model = YOLO(world_file, task="detect")
+        if world_file == WORLD_MODEL:
+            world_model.set_classes(list(WORLD_WORDS.keys()))   # the OpenVINO copy already has the words
     print("Models loaded")
 
 

@@ -25,6 +25,19 @@ COLORS = {
 }
 
 
+# limbs (COCO body points): shoulders-elbows-wrists, shoulders-hips, hips-knees-ankles
+SKELETON = [(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11), (6, 12), (11, 12),
+            (11, 13), (13, 15), (12, 14), (14, 16)]
+PERSON_COLORS = [(255, 128, 0), (0, 200, 255), (200, 0, 255), (0, 255, 128), (255, 0, 128),
+                 (128, 255, 0), (0, 128, 255), (255, 255, 0)]
+
+
+def person_color(name):
+    # each person number always gets the same colour
+    digits = "".join(c for c in name if c.isdigit())
+    return PERSON_COLORS[int(digits or 0) % len(PERSON_COLORS)]
+
+
 def get_source():
     if len(sys.argv) > 1:
         s = sys.argv[1]
@@ -55,6 +68,14 @@ def draw(frame, people_states, matches, phones):
         if d["deviation"] is not None:
             turn = "turn " + str(round(d["deviation"], 2))
             cv2.putText(img, turn, (x1 + 5, y1 + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+    # body skeleton of each matched person, in that person's own colour (bound to their number)
+    for name in matches:
+        pts = matches[name]["points"]
+        color = person_color(name)
+        for a, b in SKELETON:
+            if a < len(pts) and b < len(pts) and pts[a][2] >= config.KEYPOINT_CONFIDENCE and pts[b][2] >= config.KEYPOINT_CONFIDENCE:
+                cv2.line(img, (int(pts[a][0]), int(pts[a][1])), (int(pts[b][0]), int(pts[b][1])), color, 3)
 
     # face points of each matched person (nose = red, eyes/ears = white)
     for name in matches:

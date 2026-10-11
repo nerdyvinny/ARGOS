@@ -29,3 +29,4 @@ research/labels/frames/
 *.jpg
 *.png
 research/watch_runs/
+kernel.errors.txt

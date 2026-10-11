@@ -35,3 +35,6 @@ Python: 3.14.6 (the only Python on this machine), venv created with `py -3.14 -m
 ## Not installed
 - Nothing into the main `.venv` or system Python.
 - WhisperX / cloud transcription for the watch skill: not needed, every video had captions.
+
+## Added later
+| flask | 3.1.2 | BSD-3-Clause | ~1 MB (+ werkzeug, jinja2, itsdangerous, blinker) | https://pypi.org/project/flask/ | needed by `ui/dashboard.py` so `tests/test_main.py` can import |

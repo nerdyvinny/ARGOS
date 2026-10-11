@@ -7,17 +7,27 @@
 # Run it from anywhere (Windows cmd), for example from the repo root:
 #   py rf_detect\rf_monitor.py scan          one sweep, shows raw levels (good first test)
 #   py rf_detect\rf_monitor.py baseline      learn what the EMPTY room looks like
+#   py rf_detect\rf_monitor.py fovtest       range test: farthest desk vs behind camera vs next room
 #   py rf_detect\rf_monitor.py monitor       watch and compare against the baseline
-#   py rf_detect\rf_monitor.py survey        walk the antenna to each desk, makes a desk heatmap
+#   py rf_detect\rf_monitor.py bluetooth     only look for Bluetooth headphones (no RTL-SDR needed)
 #
-# The heatmaps open in your browser at http://localhost:5050
-#   /waterfall   (scan / monitor)  which band is busy, over time
-#   /survey      (survey)          which desk is the loudest
+# Setup: the antenna sits at the FRONT of the room next to the camera, facing the
+# students, with a metal sheet behind it (see rf_config.py). Order: baseline, fovtest, monitor.
+# The camera link is still a placeholder (see camera_confirms below).
+#
+# "monitor" also checks Bluetooth for headphones in the background.
+# Bluetooth needs Python 3.12, so for that use  py -3.12  instead of  py
+# (first time:  py -3.12 -m pip install bleak numpy pyrtlsdr==0.2.93 "setuptools<81")
+# (newer pyrtlsdr does not work with the rtlsdr.dll that comes with SDR++)
+#
+# The web page opens in your browser at http://localhost:5050
+#   /waterfall   (scan / monitor)       which band is busy, over time
+#   /bluetooth   (bluetooth / monitor)  headphones switched on nearby
 # The page stays up after the sweeps finish. Press Ctrl+C to quit.
 #
 # Add --simulate to try everything with a fake radio (no hardware needed).
-# Add --sweeps 20 to stop after 20 sweeps.
-# Add --no-web to skip the heatmap page (the tests use this).
+# Add --sweeps 20 to stop after 20 sweeps (or 20 Bluetooth scans).
+# Add --no-web to skip the web page (the tests use this).
 # Close SDR++ first! Only one program can use the radio at a time.
 
 import os
@@ -27,11 +37,12 @@ import json
 import time
 import numpy as np
 
-# Let Python find rf_config.py and rf_heatmap.py (they sit next to this file),
+# Let Python find rf_config.py, rf_web.py and bt_scan.py (they sit next to this file),
 # no matter which folder you run from.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rf_config as config
-import rf_heatmap
+import rf_web
+import bt_scan
 
 
 # ---------------- the radio (real or fake) ----------------
@@ -77,8 +88,8 @@ class RealRadio:
 class FakeRadio:
     # Pretend radio for testing. Quiet noise everywhere.
     # When phone_on is True, the 700 MHz band gets short bursts of extra power.
-    # phone_strength is how loud (4 = about +12 dB). Survey mode makes it
-    # louder at desks close to the fake phone.
+    # phone_strength is how loud (4 = about +12 dB). fovtest changes it to
+    # pretend the phone moved further away.
     def __init__(self):
         self.rng = np.random.default_rng(1)
         self.phone_on = False
@@ -164,7 +175,7 @@ def step_key(step):
 
 
 def step_heat(steps, now, baseline):
-    # One number per frequency window for the heatmaps: how many dB above normal.
+    # One number per frequency window (for the waterfall and fovtest): how many dB above normal.
     # Uses whichever is bigger: the average jump or the short-burst jump.
     # Without a baseline we compare to the quietest window in this sweep instead.
     values = []
@@ -240,31 +251,48 @@ def band_readings(bands, steps, now, baseline):
     return rows
 
 
-def is_suspicious(row):
+def is_suspicious(row, fov):
+    # fov = alarm levels from "fovtest" (or None). See rf_config.py.
     if row["avg_delta"] is None:
         return False
+    name = row["band"]["name"]
+    if fov is not None and name in fov:
+        # fovtest found a level that a phone IN FRONT of the camera goes over,
+        # but a phone BEHIND it doesn't. Use that instead of the normal rule.
+        return max(row["avg_delta"], row["peak_delta"]) >= fov[name]["threshold"]
     return row["avg_delta"] >= config.THRESHOLD_DB or row["peak_delta"] >= config.PEAK_THRESHOLD_DB
 
 
-def print_table(rows, history, sweep_number):
+def band_status(row, history, camera):
+    # Gives back (text to show, True if this band counts as ACTIVE).
+    # camera = what camera_confirms() said: True, False, or None (not linked)
+    name = row["band"]["name"]
+    if row["avg_delta"] is None:
+        return "(no baseline)", False
+    if sum(history[name]) >= config.CONFIRM_HITS:
+        if config.CAMERA_CONFIRM and camera is False:
+            return "RF only, camera sees nothing (ignored)", False
+        if camera is True:
+            return "ACTIVE  <-- transmitting (camera agrees)", True
+        return "ACTIVE  <-- transmitting", True
+    if history[name][-1]:
+        return "maybe", False
+    return "ok", False
+
+
+def print_table(rows, history, sweep_number, camera):
     print("")
-    print("---- sweep", sweep_number, "at", time.strftime("%H:%M:%S"), "----")
+    print("==== CELL BANDS (RTL-SDR) sweep", sweep_number, "at", time.strftime("%H:%M:%S"), "====")
     print("%-14s %-16s %9s %9s %9s  %s" % ("band", "carriers", "level dB", "avg +dB", "peak +dB", "status"))
     for r in rows:
         name = r["band"]["name"]
-        status = "ok"
-        if r["avg_delta"] is None:
-            status = "(no baseline)"
-        elif sum(history[name]) >= config.CONFIRM_HITS:
-            status = "ACTIVE  <-- transmitting"
-        elif history[name][-1]:
-            status = "maybe"
+        status, active = band_status(r, history, camera)
         avg_text = "" if r["avg_delta"] is None else "%+.1f" % r["avg_delta"]
         peak_text = "" if r["peak_delta"] is None else "%+.1f" % r["peak_delta"]
         print("%-14s %-16s %9.1f %9s %9s  %s" % (name, r["band"]["carriers"][:16], r["level"], avg_text, peak_text, status))
 
 
-def write_log(rows, history):
+def write_log(rows, history, camera):
     new_file = not os.path.exists(config.LOG_FILE)
     with open(config.LOG_FILE, "a", newline="") as f:
         w = csv.writer(f)
@@ -272,78 +300,193 @@ def write_log(rows, history):
             w.writerow(["time", "band", "level_db", "avg_delta_db", "peak_delta_db", "active"])
         for r in rows:
             name = r["band"]["name"]
-            active = sum(history[name]) >= config.CONFIRM_HITS
+            status, active = band_status(r, history, camera)
             w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), name, round(r["level"], 2),
                         "" if r["avg_delta"] is None else round(r["avg_delta"], 2),
                         "" if r["peak_delta"] is None else round(r["peak_delta"], 2),
                         int(active)])
 
 
-# ---------------- survey (desk heatmap) ----------------
+# ---------------- camera link (PLACEHOLDER: not hooked up yet) ----------------
 
-def run_survey(radio, steps, baseline, simulate):
-    # With one antenna we can't tell direction, but we CAN tell distance:
-    # the signal is strongest close to the phone. So we carry the antenna to
-    # each desk, measure, and color the desk map.
-    desks, ratio = rf_heatmap.load_desk_layout(config.DESKS_FILE, config.GRID_ROWS, config.GRID_COLS)
-    if os.path.exists(config.DESKS_FILE):
-        print("Using", len(desks), "desks from", config.DESKS_FILE)
+def camera_confirms():
+    # PLACEHOLDER. Gives back:
+    #   True  = the camera sees something that explains the RF (a phone, someone on their phone)
+    #   False = the camera sees nothing suspicious in its view
+    #   None  = the camera is not connected yet (what it always says for now)
+    #
+    # The idea: the antenna and camera both face the students, so a phone the
+    # camera can see should also be the one making the RF. If the RF goes up but
+    # the camera sees nothing, the phone is probably outside the camera's view
+    # (behind it, in the hallway, next room) and we can ignore it.
+    #
+    # TODO (with the team) - how to connect it, pick ONE:
+    #   a) app/main.py saves what it sees every second to a small file, e.g.
+    #      camera_status.json = {"time": 1700000000, "phone_desks": ["Desk 4"]}
+    #      and here we read it:
+    #          data = json.load(open("camera_status.json"))
+    #          if time.time() - data["time"] > 5: return None     # camera stopped
+    #          return len(data["phone_desks"]) > 0
+    #   b) run the RF monitor inside app/main.py and ask it directly, e.g.
+    #          return len(latest_phone_detections) > 0             # from vision/detector.py
+    #
+    # Also TODO: when the camera says yes, tell rules/brain.py so that desk's
+    # score goes up a little (Person 3's file, ask first).
+    return None
+
+
+# ---------------- fovtest: only count phones in front of the camera ----------------
+
+def fov_file(simulate):
+    if simulate:
+        return config.SIM_FOV_FILE
+    return config.FOV_FILE
+
+
+def measure_spot(radio, steps, bands, baseline):
+    # How far above normal each band is with the test phone at one spot.
+    # Takes the loudest window of each band, a few sweeps, and uses the middle value
+    # (the median) so one random blip doesn't count.
+    readings = {}
+    for b in bands:
+        readings[b["name"]] = []
+    for _ in range(config.FOV_TEST_SWEEPS):
+        values = step_heat(steps, sweep(radio, steps), baseline)
+        for b in bands:
+            band_values = [v for s, v in zip(steps, values) if s["band"] == b["name"]]
+            readings[b["name"]].append(max(band_values))
+    result = {}
+    for name in readings:
+        result[name] = float(np.median(readings[name]))
+    return result
+
+
+def run_fovtest(radio, steps, bands, baseline, simulate):
+    # Sets the alarm level so a phone at the farthest desk counts, but a phone
+    # behind the camera or in the next room doesn't. See RANGE in rf_config.py.
+    print("")
+    print("RANGE TEST. You need one test phone. Turn its Wi-Fi OFF, then start a")
+    print("phone call or stream a video on mobile data, so it keeps transmitting.")
+
+    print("")
+    print("STEP 1: put the phone at the FARTHEST desk the camera can still see.")
+    if simulate:
+        radio.phone_on = True
+        radio.phone_strength = 4.0          # fake: about +12 dB
     else:
-        print("No desks.json, using a", config.GRID_ROWS, "x", config.GRID_COLS, "grid (change GRID_ROWS/GRID_COLS in rf_config.py)")
+        input("Press ENTER when it's there and transmitting...")
+    front = measure_spot(radio, steps, bands, baseline)
 
-    fake_phone = desks[min(2, len(desks) - 1)]       # simulate only: where the fake phone is
-    results = {}
-    rf_heatmap.write_survey(config.SURVEY_FILE, desks, ratio, results, config.HEAT_MAX_DB)
+    print("")
+    print("STEP 2: move the SAME phone BEHIND the camera, to the closest spot you want")
+    print("ignored (for example the teacher's desk, or the door behind you).")
+    if simulate:
+        radio.phone_strength = 2.0          # fake: about +6 dB, the metal sheet makes it weaker
+    else:
+        input("Press ENTER when it's there and transmitting...")
+    behind = measure_spot(radio, steps, bands, baseline)
 
-    for d in desks:
-        if simulate:
-            print("")
-            print("(SIMULATION) antenna at", d["name"])
-            distance = ((d["x"] - fake_phone["x"]) ** 2 + (d["y"] - fake_phone["y"]) ** 2) ** 0.5
-            radio.phone_on = True
-            radio.phone_strength = 1 + 3 / (1 + 6 * distance)     # louder when closer
+    print("")
+    print("STEP 3: take the SAME phone into the NEXT classroom (or the hallway), right")
+    print("on the other side of the wall - the closest spot from another room.")
+    next_room = None
+    if simulate:
+        radio.phone_strength = 1.6          # fake: about +4 dB, the wall makes it weaker
+        next_room = measure_spot(radio, steps, bands, baseline)
+    else:
+        answer = input("Press ENTER when it's there and transmitting (s = skip this step)...")
+        if answer.strip().lower() != "s":
+            next_room = measure_spot(radio, steps, bands, baseline)
+
+    print("")
+    print("%-14s %9s %9s %9s %7s  %s" % ("band", "front dB", "behind dB", "next room", "gap", "result"))
+    levels = {}
+    for b in bands:
+        name = b["name"]
+        f = front[name]
+        bh = behind[name]
+        # the loudest spot we want IGNORED
+        ignore = bh
+        next_text = "skipped"
+        if next_room is not None:
+            ignore = max(bh, next_room[name])
+            next_text = "%+.1f" % next_room[name]
+        if f < config.THRESHOLD_DB:
+            result = "phone not seen in this band (normal rules stay)"
+        elif f - ignore < 3.0:
+            result = "too close to tell apart (see RANGE in rf_config.py)"
         else:
-            print("")
-            answer = input("Put the antenna at " + d["name"] + " and press ENTER (s = skip, q = finish): ")
-            if answer.strip().lower() == "q":
-                break
-            if answer.strip().lower() == "s":
-                continue
+            threshold = max((f + ignore) / 2, config.THRESHOLD_DB)   # halfway between "count" and "ignore"
+            levels[name] = {"front": round(f, 2), "behind": round(bh, 2), "threshold": round(threshold, 2)}
+            if next_room is not None:
+                levels[name]["next_room"] = round(next_room[name], 2)
+            result = "OK: alarm at +%.1f dB" % threshold
+        print("%-14s %+9.1f %+9.1f %9s %+7.1f  %s" % (name, f, bh, next_text, f - ignore, result))
 
-        # average the loudest window over a few sweeps, so one random blip doesn't win
-        strengths = []
-        best_db = None
-        best_band = ""
-        for _ in range(config.SURVEY_SWEEPS):
-            values = step_heat(steps, sweep(radio, steps), baseline)
-            loudest = int(np.argmax(values))
-            strengths.append(values[loudest])
-            if best_db is None or values[loudest] > best_db:
-                best_db = values[loudest]
-                best_band = steps[loudest]["band"]
-        results[d["name"]] = {"db": float(np.mean(strengths)), "band": best_band}
-        print("  %s: %+.1f dB above normal (loudest band: %s)" % (d["name"], results[d["name"]]["db"], best_band))
-        rf_heatmap.write_survey(config.SURVEY_FILE, desks, ratio, results, config.HEAT_MAX_DB)
-
-    if results:
-        ranked = sorted(results, key=lambda name: results[name]["db"], reverse=True)
+    if not levels:
         print("")
-        print("Loudest desks:")
-        for name in ranked[:3]:
-            print("  %-10s %+.1f dB" % (name, results[name]["db"]))
-        print("Saved", config.SURVEY_FILE)
+        print("No band could tell this room from the other spots, so nothing was saved.")
+        print("Check the phone was transmitting. Then try: a metal sheet ~11 cm behind the")
+        print("antenna, the antenna closer to the students, or a lower GAIN (see rf_config.py).")
+        return
+    with open(fov_file(simulate), "w") as f:
+        json.dump(levels, f, indent=2)
+    print("")
+    print("Saved", fov_file(simulate), "- monitor will use these alarm levels.")
+    print("Bands not set here still use the normal rules. Re-run this if you move the antenna or camera.")
 
 
 # ---------------- main ----------------
 
 def keep_page_open(address):
-    # the heatmap page only works while this program runs, so wait here
+    # the web page only works while this program runs, so wait here
     if address is None:
         return
     print("")
-    print("Done measuring. Heatmap is still at", address, " Press Ctrl+C to quit.")
+    print("Done measuring. The web page is still at", address, " Press Ctrl+C to quit.")
     while True:
         time.sleep(1)
+
+
+def start_web(mode):
+    # start the web page and open the right tab for this mode
+    pages = {"/waterfall": config.WATERFALL_FILE, "/bluetooth": config.BT_FILE}
+    page = "/waterfall"
+    if mode == "bluetooth":
+        page = "/bluetooth"
+    return rf_web.start_web_server(config.WEB_PORT, pages, page)
+
+
+def show_bluetooth(watcher):
+    bt_scan.print_table(watcher)
+    rf_web.write_bluetooth(config.BT_FILE, watcher.current(), watcher.total, watcher.problem,
+                               watcher.too_far, config.BT_MIN_RSSI)
+
+
+def run_bluetooth(simulate, max_scans, web):
+    # Bluetooth only: doesn't need the RTL-SDR
+    if simulate:
+        print("(SIMULATION: fake Bluetooth, no hardware)")
+    watcher = bt_scan.BluetoothWatcher(simulate)
+    address = None
+    if web:
+        address = start_web("bluetooth")
+    print("Scanning for Bluetooth headphones,", config.BT_SCAN_SECONDS, "seconds per scan. Press Ctrl+C to stop")
+    try:
+        scan_number = 0
+        while max_scans is None or scan_number < max_scans:
+            scan_number = scan_number + 1
+            try:
+                new = watcher.scan()
+            except Exception as e:
+                print(bt_scan.explain_problem(e))
+                return
+            for d in new:
+                print("NEW headphones:", d["name"], "-", d["distance"], "-", d["why"])
+            show_bluetooth(watcher)
+        keep_page_open(address)
+    except KeyboardInterrupt:
+        print("\nStopped")
 
 
 def get_options():
@@ -359,8 +502,12 @@ def get_options():
 
 def main():
     mode, simulate, max_sweeps, web = get_options()
-    if mode not in ("scan", "baseline", "monitor", "survey"):
-        print("Use: py rf_monitor.py scan | baseline | monitor | survey   [--simulate] [--sweeps N] [--no-web]")
+    if mode not in ("scan", "baseline", "fovtest", "monitor", "bluetooth"):
+        print("Use: py rf_monitor.py scan | baseline | fovtest | monitor | bluetooth   [--simulate] [--sweeps N] [--no-web]")
+        return
+
+    if mode == "bluetooth":
+        run_bluetooth(simulate, max_sweeps, web)
         return
 
     bands = [b for b in config.BANDS if b["enabled"]]
@@ -375,7 +522,7 @@ def main():
             radio = RealRadio()
         except Exception as e:
             print("Could not open the RTL-SDR:", e)
-            print("Is SDR++ still open? Is the radio plugged in? Is pyrtlsdr installed (py -m pip install pyrtlsdr)?")
+            print("Is SDR++ still open? Is the radio plugged in? Is pyrtlsdr installed (py -3.12 -m pip install pyrtlsdr==0.2.93 \"setuptools<81\")?")
             return
 
     try:
@@ -384,7 +531,7 @@ def main():
             return
 
         baseline = None
-        if mode in ("monitor", "survey"):
+        if mode in ("monitor", "fovtest"):
             baseline = load_baseline(baseline_file(simulate))
             if baseline is None and simulate:
                 print("No fake baseline yet, making one first")
@@ -393,20 +540,33 @@ def main():
                 print("No", config.BASELINE_FILE, "yet. Run: py rf_monitor.py baseline  (in the EMPTY room)")
                 return
 
+        if mode == "fovtest":
+            run_fovtest(radio, steps, bands, baseline, simulate)
+            return
+
         address = None
         if web:
-            page = "/survey" if mode == "survey" else "/waterfall"
-            address = rf_heatmap.start_web_server(config.WEB_PORT, config.WATERFALL_FILE, config.SURVEY_FILE, page)
-
-        if mode == "survey":
-            run_survey(radio, steps, baseline, simulate)
-            keep_page_open(address)
-            return
+            address = start_web(mode)
 
         history = {}
         for b in bands:
             history[b["name"]] = [False] * config.CONFIRM_WINDOW
         waterfall = []
+
+        fov = None
+        if mode == "monitor" and config.USE_FOV_TEST:
+            fov = load_baseline(fov_file(simulate))     # same kind of .json file, so we reuse the loader
+            if fov is None:
+                print("No front/back test yet, so phones BEHIND the camera count too. Run: fovtest")
+            else:
+                print("Only counting phones in front of the camera for:", ", ".join(fov))
+        if config.CAMERA_CONFIRM:
+            print("CAMERA_CONFIRM is on, but the camera link is still a placeholder (see camera_confirms)")
+
+        watcher = None
+        if mode == "monitor" and config.BT_CHECK:
+            watcher = bt_scan.BluetoothWatcher(simulate)
+            watcher.start_background()          # scans Bluetooth while we sweep the radio
 
         sweep_number = 0
         print("Press Ctrl+C to stop")
@@ -418,20 +578,23 @@ def main():
             rows = band_readings(bands, steps, now, baseline)
             for r in rows:
                 name = r["band"]["name"]
-                history[name] = history[name][1:] + [is_suspicious(r)]
-            print_table(rows, history, sweep_number)
+                history[name] = history[name][1:] + [is_suspicious(r, fov)]
+            camera = camera_confirms()                   # placeholder: always None for now
+            print_table(rows, history, sweep_number, camera)
 
             waterfall.append((time.strftime("%H:%M:%S"), step_heat(steps, now, baseline)))
             waterfall = waterfall[-config.WATERFALL_ROWS:]
-            rf_heatmap.write_waterfall(config.WATERFALL_FILE, steps, waterfall, config.HEAT_MAX_DB, baseline is not None)
+            rf_web.write_waterfall(config.WATERFALL_FILE, steps, waterfall, config.HEAT_MAX_DB, baseline is not None)
 
+            if watcher is not None:
+                show_bluetooth(watcher)
             if mode == "monitor" and not simulate:    # keep fake data out of the real log
-                write_log(rows, history)
+                write_log(rows, history, camera)
             if mode == "scan":
                 break
 
         if mode == "monitor":
-            active = [n for n in history if sum(history[n]) >= config.CONFIRM_HITS]
+            active = [r["band"]["name"] for r in rows if band_status(r, history, camera)[1]]
             print("")
             print("Bands that look ACTIVE right now:", active if active else "none")
         keep_page_open(address)

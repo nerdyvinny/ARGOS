@@ -31,19 +31,70 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
-class HeatmapTests(unittest.TestCase):
+class WaterfallTests(unittest.TestCase):
 
     def test_scan_writes_the_waterfall(self):
         result = run([os.path.join("rf_detect", "rf_monitor.py"), "scan", "--simulate", "--no-web"], REPO)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(os.path.exists(os.path.join(REPO, "rf_detect", "rf_waterfall.html")))
 
-    def test_survey_finds_the_fake_phone_desk(self):
+    # the desk heatmap was removed, so "survey" is no longer a mode
+    def test_survey_mode_is_gone(self):
         result = run([os.path.join("rf_detect", "rf_monitor.py"), "survey", "--simulate", "--no-web"], REPO)
         self.assertEqual(result.returncode, 0, result.stderr)
-        # the fake phone sits at the 3rd desk, so it should be the loudest
-        loudest = result.stdout.split("Loudest desks:")[1].split()[0:2]
-        self.assertEqual(loudest, ["Desk", "3"], result.stdout)
+        self.assertIn("Use:", result.stdout)
+
+
+class FrontBackTests(unittest.TestCase):
+
+    # fovtest sets an alarm level between "phone in front" and "phone behind",
+    # and monitor still catches the (front) fake phone with it
+    def test_fovtest_then_monitor(self):
+        script = os.path.join("rf_detect", "rf_monitor.py")
+        result = run([script, "fovtest", "--simulate"], REPO)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("OK: alarm at", result.stdout)
+        self.assertIn("STEP 3", result.stdout)          # the next-classroom step ran
+        self.assertTrue(os.path.exists(os.path.join(REPO, "rf_detect", "rf_fov_sim.json")))
+
+        result = run([script, "monitor", "--simulate", "--no-web", "--sweeps", "6"], REPO)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Only counting phones in front of the camera", result.stdout)
+        self.assertIn("ACTIVE right now: ['B12/17 700']", result.stdout)
+
+    def test_phone_behind_the_camera_is_ignored(self):
+        sys.path.insert(0, os.path.join(REPO, "rf_detect"))
+        import rf_monitor
+        fov = {"B5 850": {"front": 12.0, "behind": 5.0, "threshold": 8.5}}
+        row = {"band": {"name": "B5 850"}, "avg_delta": 3.5, "peak_delta": 7.0}   # loud enough for the normal rule
+        self.assertTrue(rf_monitor.is_suspicious(row, None))
+        self.assertFalse(rf_monitor.is_suspicious(row, fov))                       # but under the front/back level
+        row["peak_delta"] = 11.0
+        self.assertTrue(rf_monitor.is_suspicious(row, fov))
+
+
+class BluetoothTests(unittest.TestCase):
+
+    def test_finds_fake_headphones_but_not_the_mouse(self):
+        result = run([os.path.join("rf_detect", "rf_monitor.py"), "bluetooth", "--simulate", "--no-web", "--sweeps", "3"], REPO)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Apple AirPods/Beats signal", result.stdout)
+        self.assertIn("Galaxy Buds2 Pro", result.stdout)
+        self.assertNotIn("Logitech Mouse", result.stdout)
+        # the fake earbuds "in the next room" are too weak, so they are ignored (BT_MIN_RSSI)
+        self.assertNotIn("Sony WF-1000XM5", result.stdout)
+        self.assertIn("probably another room", result.stdout)
+
+    def test_headphone_rules(self):
+        sys.path.insert(0, os.path.join(REPO, "rf_detect"))
+        import bt_scan
+        def dev(name="", maker=None, uuids=None):
+            return {"name": name, "manufacturer_data": maker or {}, "service_uuids": uuids or [], "service_data": {}}
+        self.assertIsNotNone(bt_scan.why_headphones(dev(name="WH-1000XM5")))
+        self.assertIsNotNone(bt_scan.why_headphones(dev(uuids=["0000fe2c-0000-1000-8000-00805f9b34fb"])))
+        self.assertIsNotNone(bt_scan.why_headphones(dev(maker={0x004C: bytes([0x07, 0x19])})))
+        self.assertIsNone(bt_scan.why_headphones(dev(maker={0x004C: bytes([0x10, 0x05])})))    # an iPhone
+        self.assertIsNone(bt_scan.why_headphones(dev(name="Logitech Mouse")))
 
 
 if __name__ == "__main__":

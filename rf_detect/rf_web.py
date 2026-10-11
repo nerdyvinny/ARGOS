@@ -1,15 +1,11 @@
-# Draws the RF heatmaps as simple web pages (.html). Open them in any browser.
+# The web page for the phone + Bluetooth monitor, at http://localhost:5050
 # No extra installs needed: we just write HTML text.
 #
 # 1. Waterfall: one row per sweep, one column per frequency window.
 #    Color = how far above the empty-room baseline it is. Shows WHICH band and WHEN.
-# 2. Survey: a map of the desks. You carry the antenna to each desk, and each
-#    desk gets colored by how strong the phone bands were right there.
-#    With only 1 antenna this is the best way to find WHERE: the signal is
-#    strongest close to the phone.
+# 2. Bluetooth: a list of nearby headphones/earbuds (from bt_scan.py).
 
 import os
-import json
 import time
 import threading
 import webbrowser
@@ -43,10 +39,7 @@ def page_start(title, refresh_seconds):
   .cell { width: 14px; height: 9px; }
   .time { padding-right: 6px; color: #aaa; }
   .legend span { display: inline-block; width: 40px; text-align: center; color: #000; font-size: 11px; }
-  .desk { position: absolute; border: 2px solid #000; border-radius: 6px; color: #fff;
-          font-size: 13px; text-align: center; box-sizing: border-box; padding: 4px;
-          text-shadow: 0 0 3px #000; overflow: hidden; }
-  .top { border: 4px solid #fff; }
+  .bt { padding: 6px 10px; font-size: 15px; }
 </style></head><body>
 <h2>%s</h2>
 """ % (refresh, title, title)
@@ -95,83 +88,42 @@ def write_waterfall(file_name, steps, history, max_db, have_baseline):
     save_text(file_name, html)
 
 
-def load_desk_layout(desks_file, grid_rows, grid_cols):
-    # Gives a list of desks: {"name", "x", "y", "w", "h"} with x/y/w/h from 0 to 1
-    # (a fraction of the map size), plus the map's height/width ratio.
-    if os.path.exists(desks_file):
-        with open(desks_file) as f:
-            data = json.load(f)
-        fw = data.get("frame_width")
-        fh = data.get("frame_height")
-        if not fw or not fh:
-            # old file without the picture size: use the biggest box corner instead
-            fw = max(d["box"][2] for d in data["desks"])
-            fh = max(d["box"][3] for d in data["desks"])
-        desks = []
-        for d in data["desks"]:
-            x1, y1, x2, y2 = d["box"]
-            desks.append({"name": d["name"], "x": x1 / fw, "y": y1 / fh,
-                          "w": (x2 - x1) / fw, "h": (y2 - y1) / fh})
-        return desks, fh / fw
-
-    # no desks.json: make a simple grid (front of the room at the top)
-    desks = []
-    number = 1
-    for r in range(grid_rows):
-        for c in range(grid_cols):
-            desks.append({"name": "Desk " + str(number),
-                          "x": (c + 0.1) / grid_cols, "y": (r + 0.1) / grid_rows,
-                          "w": 0.8 / grid_cols, "h": 0.8 / grid_rows})
-            number = number + 1
-    return desks, 0.6
-
-
-def write_survey(file_name, desks, ratio, results, max_db):
-    # results: desk name -> {"db": dB above normal, "band": loudest band}
-    width = 900
-    height = int(width * ratio)
-    html = page_start("RF desk survey", 3)
-    html += "<p>Each desk is colored by how strong the phone bands were when the antenna was AT that desk. "
-    html += "Strongest = most likely phone (white border). Gray = not measured yet.</p>\n"
-    html += legend(max_db)
-
-    top_name = None
-    for name in results:
-        if top_name is None or results[name]["db"] > results[top_name]["db"]:
-            top_name = name
-
-    html += '<div style="position:relative; width:%dpx; height:%dpx; background:#222;">\n' % (width, height)
-    for d in desks:
-        r = results.get(d["name"])
-        if r is None:
-            color = heat_color(None, max_db)
-            text = d["name"]
-        else:
-            color = heat_color(r["db"], max_db)
-            text = "%s<br><b>%+.1f dB</b><br>%s" % (d["name"], r["db"], r["band"])
-        css_class = "desk top" if d["name"] == top_name else "desk"
-        html += '<div class="%s" style="left:%dpx; top:%dpx; width:%dpx; height:%dpx; background:%s;">%s</div>\n' % (
-            css_class, int(d["x"] * width), int(d["y"] * height),
-            int(d["w"] * width), int(d["h"] * height), color, text)
-    html += "</div>\n"
+def write_bluetooth(file_name, headphones, total, problem, too_far, min_rssi):
+    # headphones: list from BluetoothWatcher.current(), closest first
+    html = page_start("Bluetooth headphones nearby", 3)
+    html += "<p>%d Bluetooth devices nearby, %d look like headphones/earbuds. " % (total, len(headphones))
+    html += "This shows headphones that are switched on, not who they are connected to. Distance is very rough.</p>\n"
+    if too_far:
+        html += "<p>Ignored %d headphones weaker than %d dBm (probably another room).</p>\n" % (too_far, min_rssi)
+    if problem:
+        html += '<p style="color:#f66; font-size:18px;">%s</p>\n' % problem
+    html += '<table style="font-size:15px;">\n'
+    html += '<tr><th>name</th><th>signal</th><th>distance</th><th>why we think it is headphones</th><th>first seen</th></tr>\n'
+    for d in headphones:
+        # signal -40 dBm (right here) = red ... -90 dBm (far) = blue
+        color = heat_color(d["rssi"] + 90, 50)
+        first = time.strftime("%H:%M:%S", time.localtime(d["first_seen"]))
+        html += '<tr><td class="bt">%s</td><td class="bt" style="background:%s">%d dBm</td><td class="bt">%s</td><td class="bt">%s</td><td class="bt">%s</td></tr>\n' % (
+            d["name"], color, d["rssi"], d["distance"], d["why"], first)
+    html += "</table>\n"
     html += "<p>Updated %s</p>\n" % time.strftime("%H:%M:%S")
     html += "</body></html>\n"
     save_text(file_name, html)
 
 
-# ---------------- little web server so the heatmaps show at http://localhost:PORT ----------------
+# ---------------- little web server so the pages show at http://localhost:PORT ----------------
 
 # web address -> file it shows. Only these files are shared, nothing else.
 PAGES = {}
 
 
-class HeatmapHandler(BaseHTTPRequestHandler):
+class PageHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/":
-            html = page_start("RF heatmaps", 0)
-            html += '<p><a style="color:#8cf" href="/waterfall">Waterfall</a> (scan / monitor): which band is busy, over time</p>\n'
-            html += '<p><a style="color:#8cf" href="/survey">Desk survey</a> (survey): which desk is the loudest</p>\n'
+            html = page_start("Phone + Bluetooth monitor", 0)
+            html += '<p><a style="color:#8cf" href="/waterfall">Phone bands</a> (scan / monitor): which cell band is busy, over time</p>\n'
+            html += '<p><a style="color:#8cf" href="/bluetooth">Bluetooth headphones</a> (bluetooth / monitor): earbuds switched on nearby</p>\n'
             html += "</body></html>\n"
         elif path in PAGES and os.path.exists(PAGES[path]):
             with open(PAGES[path], encoding="utf-8") as f:
@@ -194,21 +146,21 @@ class HeatmapHandler(BaseHTTPRequestHandler):
         pass    # don't print a line for every page load
 
 
-def start_web_server(port, waterfall_file, survey_file, open_page):
+def start_web_server(port, pages, open_page):
     # Runs in the background while the monitor keeps measuring.
+    # pages: web address -> file, e.g. {"/bluetooth": "C:/.../rf_bluetooth.html"}
     # Gives back the address, or None if it could not start.
-    PAGES["/waterfall"] = waterfall_file
-    PAGES["/survey"] = survey_file
+    PAGES.update(pages)
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", port), HeatmapHandler)
+        server = ThreadingHTTPServer(("127.0.0.1", port), PageHandler)
     except OSError:
-        print("Could not start the heatmap page: port", port, "is busy.")
+        print("Could not start the web page: port", port, "is busy.")
         print("Is another copy of rf_monitor running? Or change WEB_PORT in rf_config.py")
         return None
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     address = "http://localhost:%d%s" % (port, open_page)
-    print("Heatmap page:", address)
+    print("Web page:", address)
     webbrowser.open(address)
     return address
 

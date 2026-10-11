@@ -325,6 +325,46 @@ def find_world_things(frame, tiles, people):
     return devices, not_devices
 
 
+# ---------- device filter (round 3) ----------
+# On the 25 hand-checked frames every false device was YOLO-World calling something a "smartwatch"
+# (at its 0.15 cut-off), and in the live test a pen was taken for a phone. The rules below took false
+# devices from 12 to 7 there while keeping all 8 real watches. Numbers can be changed in settings/config.py.
+PHONE_CONFIDENCE_FULL = getattr(config, "PHONE_CONFIDENCE_FULL", 0.35)        # phone on the whole picture
+PHONE_CONFIDENCE_CLOSEUP = getattr(config, "PHONE_CONFIDENCE_CLOSEUP", 0.45)  # close-ups are blown up: be surer
+PHONE_MAX_ASPECT = getattr(config, "PHONE_MAX_ASPECT", 3.0)                   # long side / short side; a pen is ~10
+WORLD_DEVICE_CONFIDENCE = getattr(config, "WORLD_DEVICE_CONFIDENCE", 0.35)    # smartwatch / earbuds / headphones
+PEN_VETO_RATIO = 0.8           # a pen box at the same spot this sure (x the phone's confidence) = it's a pen
+REPORT_ONLY = ["pen", "paper"]  # never alerted on, so the filter leaves them alone
+
+
+def is_real_phone(ph, others):
+    if ph["conf"] < (PHONE_CONFIDENCE_CLOSEUP if ph.get("src") == "closeup" else PHONE_CONFIDENCE_FULL):
+        return False
+    w = ph["box"][2] - ph["box"][0]
+    h = ph["box"][3] - ph["box"][1]
+    if min(w, h) <= 0 or max(w, h) / min(w, h) > PHONE_MAX_ASPECT:
+        return False      # long and thin: a pen, not a phone
+    for o in others:
+        if o.get("label") == "pen" and overlap_of_smaller(ph["box"], o["box"]) > 0.5                 and o["conf"] >= ph["conf"] * PEN_VETO_RATIO:
+            return False  # YOLO-World is about as sure it is a pen
+    return True
+
+
+def filter_devices(items, others):
+    # items: phones + YOLO-World things; others: YOLO-World things (pens are used to throw out fake phones)
+    kept = []
+    for it in items:
+        label = it.get("label")
+        if label in REPORT_ONLY:
+            kept.append(it)
+        elif label == "phone":
+            if is_real_phone(it, others):
+                kept.append(it)
+        elif it.get("conf", 0) >= WORLD_DEVICE_CONFIDENCE:
+            kept.append(it)
+    return kept
+
+
 def drop_fake_phones(phones, not_devices):
     # a "phone" that is really a name tag / ID card: YOLO-World is surer it's a tag
     kept = []
@@ -491,12 +531,12 @@ def detect_fast(frame, stages):
     with Timer(stages, "objects"):
         r = object_model(frame, conf=config.PHONE_CONFIDENCE, imgsz=config.IMAGE_SIZE,
                          classes=[config.PHONE_CLASS_ID], verbose=False)[0]
-        phones = result_things(r, 0, 0, lambda c: "phone")
+        phones = [dict(t, src="full") for t in result_things(r, 0, 0, lambda c: "phone")]
         if crops:
             rs = object_model([c[2] for c in crops], conf=config.PHONE_CONFIDENCE, imgsz=CROP_SIZE,
                               classes=[config.PHONE_CLASS_ID], verbose=False)
             for c, rr in zip(crops, rs):
-                phones = phones + result_things(rr, c[0], c[1], lambda k: "phone")
+                phones = phones + [dict(t, src="closeup") for t in result_things(rr, c[0], c[1], lambda k: "phone")]
     global last_world_crops, last_world_full
     if WORLD_CHECK and world_model is not None:
         with Timer(stages, "world"):
@@ -512,7 +552,8 @@ def detect_fast(frame, stages):
     found = last_world_full + last_world_crops
     devices = [t for t in found if t["label"] is not None]
     not_devices = [t for t in found if t["label"] is None]
-    phones = remove_doubles_per_label(drop_fake_phones(phones, not_devices) + devices)
+    phones = filter_devices(drop_fake_phones(phones, not_devices) + devices, devices)
+    phones = remove_doubles_per_label(phones)
     stages["far_checked"] = 1 if far_checked[0] else 0
     fast_count = fast_count + 1
     return people, phones

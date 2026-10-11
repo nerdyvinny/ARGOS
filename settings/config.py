@@ -90,3 +90,9 @@ AI_LOW_PRIORITY = False          # low priority starved the AI (0.34 checks/s); 
 AI_THREADS = 3                   # CPU threads the AI may use (the screen loop keeps the rest)
 SCREEN_CV_THREADS = 1            # OpenCV in the screen loop runs on 1 thread (its helper threads waited
                                  # behind the AI: one resize took 75 ms instead of 3 ms)
+
+# ---------- device filter (round 3, tuned on the 25 hand-checked frames of clip 2) ----------
+PHONE_CONFIDENCE_FULL = 0.35     # a phone on the whole picture must be this sure
+PHONE_CONFIDENCE_CLOSEUP = 0.45  # ... and on a wrist/head close-up (blown up, so more false ones)
+PHONE_MAX_ASPECT = 3.0           # a "phone" longer than 3x its width is a pen
+WORLD_DEVICE_CONFIDENCE = 0.35   # YOLO-World smartwatch/earbuds/headphones (0.15 gave all the false devices)

@@ -23,9 +23,10 @@ from settings import config
 CLIP = "perf/clip/classroom.avi"
 TIMES = "perf/clip/classroom_times.json"
 GT = "research/labels/gt.json"
-CLASSES = ["person", "phone", "watch", "headphones", "paper", "pen"]
-LABEL_MAP = {"phone": "phone", "smartwatch": "watch", "watch": "watch", "headphones": "headphones",
-             "earbuds": "headphones", "paper": "paper", "pen": "pen"}
+CLASSES = ["person", "device", "headphones", "paper", "pen"]
+# phone and smart watch are one class now: "device"
+LABEL_MAP = {"phone": "device", "smartwatch": "device", "watch": "device", "device": "device",
+             "headphones": "headphones", "earbuds": "headphones", "paper": "paper", "pen": "pen"}
 OVERLAP_TEST = (145.0, 290.0)     # seconds of the clip with standing up, walking, crossing, hiding, leaving
 KP = 0.5                          # keypoint confidence used for the dropout numbers (same as config)
 CLIP_FPS = 3.85                   # measured camera rate of the recording
@@ -317,10 +318,17 @@ def main():
     ap.add_argument("--name", required=True)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--rescore", action="store_true", help="score an existing run again (after label fixes)")
+    ap.add_argument("--clip", default=None, help="folder with <name>.avi, <name>_times.json (and gt.json via --gt)")
+    ap.add_argument("--gt", default=None)
     ap.add_argument("--no-openvino", action="store_true", help="use the plain .pt models (the original code path)")
     args = ap.parse_args()
     if args.no_openvino:
         config.USE_OPENVINO = False
+    global CLIP, TIMES, GT
+    if args.clip:
+        CLIP, TIMES = args.clip + ".avi", args.clip + "_times.json"
+    if args.gt:
+        GT = args.gt
     gt = json.load(open(GT))
     path = "perf/runs/" + args.name + ".json"
     if args.rescore:

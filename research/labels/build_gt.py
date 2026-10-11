@@ -14,9 +14,11 @@
 
 import json
 
-TEACHER = "research/labels/teacher.json"
-REVIEW = "research/labels/review.json"
-OUT = "research/labels/gt.json"
+import sys
+FOLDER = sys.argv[1] if len(sys.argv) > 1 else "research/labels"
+TEACHER = FOLDER + "/teacher.json"
+REVIEW = FOLDER + "/review.json"
+OUT = FOLDER + "/gt.json"
 
 
 def iou(a, b):
@@ -51,7 +53,10 @@ def main():
         tf = teacher[key]
         frames[key] = {"t": tf["t"],
                        "people": review_people(tf, rv),
-                       "items": [{"label": it[0], "box": [float(v) for v in it[1:5]]} for it in rv.get("items", [])]}
+                       "items": [{"label": it[0], "box": [float(v) for v in it[1:5]],
+                                  "vis": it[5] if len(it) > 5 else "full",       # full / half / edge
+                                  "kind": it[6] if len(it) > 6 else it[0]}       # phone / watch for devices
+                                 for it in rv.get("items", [])]}
     review_keys = sorted(int(k) for k in frames)
 
     dense = {}

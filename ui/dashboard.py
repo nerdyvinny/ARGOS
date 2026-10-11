@@ -37,7 +37,7 @@ def set_people(people_states):
         info.append({
             "name": d["name"],
             "status": d["status"],
-            "score": d["score"],
+            "alert_count": d["alert_count"],
             "looks": d["total_looks"],
             "long_looks": d["total_long_looks"],
             "phones": d["total_phone_alerts"],
@@ -86,7 +86,7 @@ function refresh() {
   fetch("/data").then(r => r.json()).then(data => {
     let html = "";
     for (const d of data.people) {
-      html += '<div class="person ' + d.status + '"><b>' + d.name + '</b><br>score ' + d.score +
+      html += '<div class="person ' + d.status + '"><b>' + d.name + '</b><br>alerts ' + d.alert_count +
               '<br>looks ' + d.looks + ' | phone ' + d.phones + '</div>';
     }
     document.getElementById("people").innerHTML = html;

@@ -111,7 +111,7 @@ class MainLoopTests(unittest.TestCase):
                 return [], [{"box": [10, 10, 20, 20], "conf": 0.9, "tile": 0}]
             return [], []
         self.run_main(FakeVideo(60), detect)
-        self.assertNotIn("phone", [a["kind"] for a in self.alerts])
+        self.assertNotIn("device", [a["kind"] for a in self.alerts])
 
     # B10
     def test_camera_released_when_first_picture_cannot_be_read(self):

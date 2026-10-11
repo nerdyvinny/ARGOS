@@ -32,7 +32,7 @@ world_model = None
 # YOLO-World settings (you can override any of these in settings/config.py)
 WORLD_CHECK = getattr(config, "WORLD_CHECK", True)
 WORLD_MODEL = getattr(config, "WORLD_MODEL", "yolov8s-worldv2.pt")
-WORLD_CONFIDENCE = getattr(config, "WORLD_CONFIDENCE", 0.15)   # YOLO-World scores are low, 0.15 is normal
+WORLD_CONFIDENCE = getattr(config, "WORLD_CONFIDENCE", 0.15)   # YOLO-World confidences are low, 0.15 is normal
 # word to look for -> label we give it. None = not a device (used to throw out fake phones)
 WORLD_WORDS = {
     "smartwatch": "smartwatch",
@@ -306,3 +306,42 @@ def detect(frame):
         phones = drop_fake_phones(phones, not_devices) + devices
         phones = remove_doubles_per_label(phones)
     return people, phones
+
+
+# ---------------- for the threaded loop (app/runtime.py) ----------------
+
+def detect_raw(frame, stages):
+    # Same models as detect(), run by the AI worker. Fills stages with the ms of each model.
+    # Gives back (people detections, item detections); the tracker and the device memory
+    # turn these into numbered people and steady items.
+    from app.trace import Timer
+    with Timer(stages, "resize"):
+        tiles = make_tiles(frame)
+    with Timer(stages, "pose"):
+        people = find_people(tiles)
+    with Timer(stages, "objects"):
+        phones = find_phones(tiles)
+    if WORLD_CHECK and world_model is not None:
+        with Timer(stages, "world"):
+            devices, not_devices = find_world_things(frame, tiles, people)
+        phones = drop_fake_phones(phones, not_devices) + devices
+        phones = remove_doubles_per_label(phones)
+    return people, phones
+
+
+def model_devices():
+    # which device each model REALLY runs on (asked from OpenVINO after the first run), for the trace
+    out = {}
+    for name, m in [("pose", pose_model), ("objects", object_model), ("world", world_model)]:
+        if m is None:
+            continue
+        backend = getattr(getattr(m, "predictor", None), "model", None)
+        compiled = getattr(backend, "ov_compiled_model", None)
+        if compiled is not None:
+            try:
+                out[name] = "openvino:" + "+".join(compiled.get_property("EXECUTION_DEVICES"))
+            except Exception:
+                out[name] = "openvino:unknown"
+        else:
+            out[name] = "torch:" + str(getattr(backend, "device", "cpu"))
+    return out

@@ -7,13 +7,15 @@
 #   .\.venv-sandbox\Scripts\python.exe research\labels\teacher.py
 
 import json
+import sys
 import cv2
 import torch
 from transformers import AutoImageProcessor, AutoModelForObjectDetection
 
 MODEL_DIR = "models/rtdetr_v2_r50vd"
-CLIP = "perf/clip/classroom.avi"
-TIMES = "perf/clip/classroom_times.json"
+CLIP = sys.argv[1] if len(sys.argv) > 1 else "perf/clip/classroom.avi"
+TIMES = sys.argv[2] if len(sys.argv) > 2 else "perf/clip/classroom_times.json"
+OUT = sys.argv[3] if len(sys.argv) > 3 else "research/labels"
 REVIEW_EVERY = 24      # frames I check by eye (~6 s apart)
 DENSE_EVERY = 12       # frames used for ID-switch counting (~3 s apart, people only)
 KEEP = {"person": 0.5, "cell phone": 0.35}
@@ -105,11 +107,11 @@ def main():
                 dets = [d for d in dets if d["label"] == "person"]
             out[str(i)] = {"t": round(times[i], 3), "review": i % REVIEW_EVERY == 0, "dets": dets}
             if i % REVIEW_EVERY == 0:
-                cv2.imwrite("research/labels/frames/f%04d.jpg" % i, draw(frame, dets))
+                cv2.imwrite(OUT + "/frames/f%04d.jpg" % i, draw(frame, dets))
             if i % 40 == 0:
                 print("frame", i, len(dets), flush=True)
         i += 1
-    json.dump(out, open("research/labels/teacher.json", "w"))
+    json.dump(out, open(OUT + "/teacher.json", "w"))
     print("done", len(out), flush=True)
 
 

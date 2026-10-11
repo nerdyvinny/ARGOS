@@ -50,7 +50,7 @@ def draw(frame, people_states, matches, phones):
         thick = 4 if d["status"] == "red" else 2
         cv2.rectangle(img, (x1, y1), (x2, y2), color, thick)
 
-        text = d["name"] + "  score " + str(d["score"])
+        text = d["name"] + "  alerts " + str(d["alert_count"])
         cv2.putText(img, text, (x1 + 5, y1 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
         if d["deviation"] is not None:
             turn = "turn " + str(round(d["deviation"], 2))
@@ -111,6 +111,59 @@ def write_csv(alert):
                          alert["message"], alert["image"]])
 
 
+def run_live(cap):
+    # The threaded loop (app/runtime.py): newest camera picture only, AI in a worker,
+    # tracker + rules + drawing on every picture. Gives back the people states for the summary.
+    from app import runtime
+    from app.trace import Trace
+    from vision.tracker import Tracker
+    from vision.devices import DeviceMemory
+
+    trace = Trace(devices=detector.model_devices()) if getattr(config, "TRACE", True) else None
+    tracker = Tracker(config.PERSON_CONFIDENCE, events=trace.event if trace else None)
+    devices = DeviceMemory(confirm=getattr(config, "DEVICE_CONFIRM", False))
+    source = runtime.CameraSource(cap)
+    session_start = time.time()
+
+    def on_alert(a, frame, people_states, now):
+        person_state = None
+        for d in people_states:
+            if d["name"] == a["person"]:
+                person_state = d
+        a["clock"] = time.strftime("%H:%M:%S")
+        a["exam_time"] = exam_time_text(now)
+        a["image"] = save_evidence(frame, person_state, a) if person_state else ""
+        write_csv(a)
+        if config.DASHBOARD:
+            dashboard.add_alerts([a])
+        print("[ALERT]", a["exam_time"], a["message"])
+
+    def show(frame, people_states, matches, items, stages):
+        drawn = draw(frame, people_states, matches, items)
+        if getattr(config, "SHOW_STOPWATCH", False):
+            # on-screen clock for the delay test: film a stopwatch and compare the two times
+            cv2.putText(drawn, "%.3f" % (time.time() - session_start), (20, drawn.shape[0] - 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3)
+        small = resize_to_width(drawn, 1280)
+        if config.DASHBOARD:
+            dashboard.set_people(people_states)
+            ok_jpg, jpg = cv2.imencode(".jpg", small)
+            if ok_jpg:
+                dashboard.set_frame(jpg.tobytes())
+        if config.SHOW_WINDOW:
+            cv2.imshow("Exam Watch (press Q to quit)", small)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                return False
+        return True
+
+    source.start()
+    try:
+        return runtime.run(source, detector, brain, tracker, devices, trace=trace, show=show, on_alert=on_alert)
+    finally:
+        if trace is not None:
+            trace.close()
+
+
 def main():
     source = get_source()
 
@@ -151,11 +204,17 @@ def main():
             if config.OPEN_BROWSER:
                 webbrowser.open(url)
 
+        if not is_file:
+            # live camera: camera, AI and screen run separately so the picture never lags
+            people_states = run_live(cap)
+            total_alerts = sum(d["alert_count"] for d in people_states)
+
         start = time.time()
         frame_number = 0
-        total_alerts = 0
+        if is_file:
+            total_alerts = 0
 
-        while True:
+        while is_file:
             if frame_number > 0:
                 for i in range(file_step - 1):
                     cap.grab()
@@ -217,8 +276,9 @@ def main():
     print("")
     print("===== SUMMARY =====")
     print("Total alerts:", total_alerts)
-    for d in sorted(people_states, key=lambda x: x["score"], reverse=True):
-        print(d["name"], "| score", d["score"], "| looks", d["total_looks"],
+    print("Alerts per person (total " + str(sum(d["alert_count"] for d in people_states)) + "):")
+    for d in sorted(people_states, key=lambda x: x["alert_count"], reverse=True):
+        print(d["name"], "| alerts", d["alert_count"], "| looks", d["total_looks"],
               "| long looks", d["total_long_looks"], "| phone alerts", d["total_phone_alerts"])
 
 

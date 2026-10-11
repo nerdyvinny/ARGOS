@@ -34,7 +34,7 @@ def new_person_state(name, box):
         "total_looks": 0,
         "total_phone_alerts": 0,
         "total_long_looks": 0,
-        "score": 0,
+        "alert_count": 0,        # alerts for this person this session (each event counted once)
         "status": "empty",
     }
 
@@ -96,10 +96,28 @@ def head_yaw(points):
 
 # ---------------- following people / matching phones ----------------
 
+def match_people_by_track(people, people_states, now):
+    # The tracker (vision/tracker.py) already gave every person a session number,
+    # so "Person N" is simply tracker number N.
+    matches = {}
+    names = {s["name"]: s for s in people_states}
+    for p in people:
+        name = "Person " + str(p["track_id"])
+        if name not in names:
+            names[name] = new_person_state(name, p["box"])
+            people_states.append(names[name])
+        matches[name] = p
+        names[name]["box"] = p["box"]
+        names[name]["last_seen"] = now
+    return matches
+
+
 def match_people(people, people_states, now):
     # gives back a dictionary: person name -> detected person
     # Each detected person goes to the remembered person whose last box overlaps it most.
     # Someone nobody matches becomes a new "Person N".
+    if len(people) > 0 and all("track_id" in p for p in people):
+        return match_people_by_track(people, people_states, now)
     matches = {}
     taken = set()
     pairs = []
@@ -115,7 +133,7 @@ def match_people(people, people_states, now):
                 pairs.append((inter / union, i, s["name"]))
     # best overlaps first, so each person and each name is used once
     pairs.sort(reverse=True)
-    for score, i, name in pairs:
+    for overlap, i, name in pairs:
         if i in taken or name in matches:
             continue
         matches[name] = people[i]
@@ -165,8 +183,26 @@ def make_alert(state, kind, message, now, alerts):
         return False
     state["last_alert"][kind] = now
     state["last_any_alert"] = now
+    state["alert_count"] = state["alert_count"] + 1   # one event = one count (the cooldown stops repeats)
     alerts.append({"person": state["name"], "kind": kind, "message": message, "time": now})
     return True
+
+
+def merge_people(people_states, kept_name, gone_name):
+    # The tracker found that two numbers were the same person: keep the older number,
+    # add the newer number's alert count and totals to it, and forget the newer one.
+    kept = None
+    gone = None
+    for s in people_states:
+        if s["name"] == kept_name:
+            kept = s
+        if s["name"] == gone_name:
+            gone = s
+    if kept is None or gone is None or kept is gone:
+        return
+    for key in ["alert_count", "total_looks", "total_phone_alerts", "total_long_looks"]:
+        kept[key] = kept[key] + gone[key]
+    people_states.remove(gone)
 
 
 def update_person(state, person, phone_seen, now, device="phone"):
@@ -178,7 +214,7 @@ def update_person(state, person, phone_seen, now, device="phone"):
         state["last_device"] = device
     state["phone_times"] = [t for t in state["phone_times"] if now - t <= config.PHONE_WINDOW_SECONDS]
     if len(state["phone_times"]) >= config.PHONE_MIN_HITS:
-        if make_alert(state, "phone", state.get("last_device", "phone").capitalize() + " seen at " + state["name"], now, alerts):
+        if make_alert(state, "device", state.get("last_device", "device").capitalize() + " seen at " + state["name"], now, alerts):
             state["total_phone_alerts"] = state["total_phone_alerts"] + 1
 
     # ----- head turning check -----
@@ -247,9 +283,7 @@ def update_person(state, person, phone_seen, now, device="phone"):
                       " times in " + str(minutes) + " min", now, alerts):
             state["look_events"] = []   # start counting again
 
-    # ----- score and color -----
-    state["score"] = state["total_looks"] + 2 * state["total_long_looks"] + 5 * state["total_phone_alerts"]
-
+    # ----- color -----
     if state["last_any_alert"] is not None and now - state["last_any_alert"] < 60:
         state["status"] = "red"
     elif not state["present"]:
@@ -262,8 +296,13 @@ def update_person(state, person, phone_seen, now, device="phone"):
     return alerts
 
 
+# items that never trigger the device alert (they are reported, not alerted on)
+NOT_ALERT_ITEMS = ["paper", "pen"]
+
+
 def update_all(people_states, people, phones, now):
     matches = match_people(people, people_states, now)
+    phones = [ph for ph in phones if ph.get("label") not in NOT_ALERT_ITEMS]
     device_labels = {}
     phone_people = match_phones_to_people(phones, matches, device_labels)
     all_alerts = []

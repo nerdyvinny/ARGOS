@@ -30,3 +30,6 @@ research/labels/frames/
 *.png
 research/watch_runs/
 kernel.errors.txt
+perf/clip2/
+perf/trace*.csv
+research/labels2/frames/

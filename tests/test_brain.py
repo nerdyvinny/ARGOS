@@ -145,3 +145,75 @@ class AlertCountTests(unittest.TestCase):
         s = brain.new_person_state("Person 1", [0, 0, 200, 200])
         self.assertNotIn("score", s)
         self.assertEqual(s["alert_count"], 0)
+
+
+# ---------------- round 3: head angles and devices only count when the AI really looked ----------------
+
+def ai_person(yaw, new_points):
+    p = person(yaw)
+    p["new_points"] = new_points   # True only on the picture where a fresh AI answer landed
+    return p
+
+
+class FreshAICheckTests(unittest.TestCase):
+
+    def feed(self, s, seconds, yaw, start, ai_every=0.5, fps=30):
+        # screen pictures at 30 fps; the AI only gives new body points every ai_every seconds
+        alerts = []
+        now = start
+        next_ai = start
+        while now < start + seconds - 1e-9:
+            fresh = now >= next_ai - 1e-9
+            if fresh:
+                next_ai = next_ai + ai_every
+            alerts = alerts + brain.update_person(s, ai_person(yaw, fresh), False, now)
+            now = now + 1.0 / fps
+        return alerts, now
+
+    def test_screen_pictures_between_ai_checks_add_no_head_angle_samples(self):
+        s = brain.new_person_state("Person 1", [0, 0, 200, 200])
+        self.feed(s, 10, 0.0, 0.0)
+        self.assertEqual(len(s["yaw_history"]), 20)   # 10 s x 2 AI checks a second, not 300 screen pictures
+
+    def test_three_second_stare_alerts(self):
+        s = brain.new_person_state("Person 1", [0, 0, 200, 200])
+        _, now = self.feed(s, 10, 0.0, 0.0)                 # learn the normal angle
+        alerts, _ = self.feed(s, 3.6, 0.6, now)            # stare at the neighbour
+        self.assertIn("long_look", kinds(alerts))
+
+    def test_one_second_turn_counts_as_a_look(self):
+        s = brain.new_person_state("Person 1", [0, 0, 200, 200])
+        _, now = self.feed(s, 10, 0.0, 0.0)
+        _, now = self.feed(s, 1.6, 0.6, now)
+        self.assertEqual(s["total_looks"], 1)
+
+    def test_three_looks_alert(self):
+        s = brain.new_person_state("Person 1", [0, 0, 200, 200])
+        _, now = self.feed(s, 10, 0.0, 0.0)
+        alerts = []
+        for i in range(3):
+            a, now = self.feed(s, 1.6, 0.6, now)
+            alerts = alerts + a
+            a, now = self.feed(s, 4, 0.0, now)
+            alerts = alerts + a
+        self.assertIn("looking", kinds(alerts))
+
+
+class DeviceHitTests(unittest.TestCase):
+
+    def test_device_hits_count_once_per_ai_check_not_per_screen_picture(self):
+        old = brain.config.PHONE_MIN_HITS
+        brain.config.PHONE_MIN_HITS = 2
+        try:
+            states = []
+            people = [{"box": [0, 0, 200, 200], "conf": 0.9, "points": face_points(0.0), "track_id": 1}]
+            phone = [{"box": [80, 80, 120, 140], "conf": 0.8, "label": "device", "kind": "phone"}]
+            alerts, _ = brain.update_all(states, people, phone, 0.0, fresh=True)
+            for i in range(1, 20):     # the same held result on 19 screen pictures: still 1 sighting
+                more, _ = brain.update_all(states, people, phone, i / 30.0, fresh=False)
+                alerts = alerts + more
+            self.assertNotIn("device", kinds(alerts))
+            more, _ = brain.update_all(states, people, phone, 1.0, fresh=True)   # 2nd AI check
+            self.assertIn("device", kinds(more))
+        finally:
+            brain.config.PHONE_MIN_HITS = old

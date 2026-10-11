@@ -23,6 +23,9 @@ import numpy as np
 
 FLOW_WIDTH = 640           # optical flow runs on a small copy of the picture
 FLOW_POINTS = 25           # corner points followed inside each box
+MIN_FLOW_POINTS = 8        # fewer points left than this = look for new ones
+SHIFT_OLD_ANSWERS = True   # move the AI's (older) answer forward by the motion since its picture
+HISTORY_FRAMES = 150       # pictures of movement remembered per person (5 s at 30 fps; the AI is ~1 s behind)
 MATCH_IOU = 0.25           # boxes must overlap this much to be the same person
 CONFIRM_HITS = 3           # sightings before a new person gets a number
 TENTATIVE_SECONDS = 8.0    # a not-yet-confirmed person missing this long is dropped (far people are checked every ~3 s)
@@ -132,63 +135,100 @@ class Tracker:
 
     # ---------- every picture ----------
 
-    def predict(self, frame, now):
+    def predict(self, frame, now, index=None):
+        # index: the camera's picture number. Each person remembers how far they had moved at
+        # every picture, so an AI answer for an OLDER picture can be moved forward to now.
         h, w = frame.shape[:2]
         self.scale = FLOW_WIDTH / w
-        small = cv2.resize(frame, (FLOW_WIDTH, int(h * self.scale)), interpolation=cv2.INTER_AREA)
+        small = cv2.resize(frame, (FLOW_WIDTH, int(h * self.scale)), interpolation=cv2.INTER_LINEAR)
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        for t in self.active:
+            t["new_points"] = False   # set True again by refresh() if an AI answer lands this picture
         if self.prev_gray is not None:
             for t in self.active:
                 self.flow_move(t, self.prev_gray, gray)
+        if index is not None:
+            for t in self.active:
+                t["moved_at"][index] = (t["moved"][0], t["moved"][1])
+                for old in [k for k in t["moved_at"] if k < index - HISTORY_FRAMES]:
+                    del t["moved_at"][old]
         self.prev_gray = gray
         self.frame = frame
 
-    def flow_move(self, track, old_gray, new_gray):
+    def moved_since(self, t, index):
+        # how far (x, y) this person moved between picture `index` and now (0, 0 if unknown)
+        if not SHIFT_OLD_ANSWERS or index is None or index not in t["moved_at"]:
+            return 0.0, 0.0
+        then = t["moved_at"][index]
+        return t["moved"][0] - then[0], t["moved"][1] - then[1]
+
+    def flow_points(self, track, gray):
+        # corner points on the HEAD and TORSO only (the top 60% of the box, middle 70% of its width).
+        # Points on the desk or the wall don't move, so they held the box back behind the person.
         s = self.scale
-        b = [v * s for v in track["box"]]
-        x1, y1 = max(0, int(b[0])), max(0, int(b[1]))
-        x2, y2 = min(old_gray.shape[1], int(b[2])), min(old_gray.shape[0], int(b[3]))
+        x1, y1, x2, y2 = [v * s for v in track["box"]]
+        w, h = x2 - x1, y2 - y1
+        x1, x2 = int(max(0, x1 + w * 0.15)), int(min(gray.shape[1], x2 - w * 0.15))
+        y1, y2 = int(max(0, y1)), int(min(gray.shape[0], y1 + h * 0.6))
         if x2 - x1 < 8 or y2 - y1 < 8:
-            return
-        mask = np.zeros_like(old_gray)
+            return None
+        mask = np.zeros_like(gray)
         mask[y1:y2, x1:x2] = 255
-        pts = cv2.goodFeaturesToTrack(old_gray, FLOW_POINTS, 0.01, 4, mask=mask)
+        return cv2.goodFeaturesToTrack(gray, FLOW_POINTS, 0.01, 4, mask=mask)
+
+    def flow_move(self, track, old_gray, new_gray):
+        # The points are kept from frame to frame; new ones are only searched for after an
+        # AI update or when too few are left (searching every frame was most of the tracker's time).
+        s = self.scale
+        pts = track.get("flow_pts")
+        if pts is None or len(pts) < MIN_FLOW_POINTS:
+            pts = self.flow_points(track, old_gray)
         if pts is None or len(pts) < 4:
+            track["flow_pts"] = None
             return
         new_pts, status, err = cv2.calcOpticalFlowPyrLK(old_gray, new_gray, pts, None, winSize=(21, 21), maxLevel=3)
         good = status.reshape(-1) == 1
         if good.sum() < 4:
+            track["flow_pts"] = None
             return
+        track["flow_pts"] = new_pts[good].reshape(-1, 1, 2)
         moves = (new_pts[good] - pts[good]).reshape(-1, 2)
         dx = float(np.median(moves[:, 0])) / s
         dy = float(np.median(moves[:, 1])) / s
         track["box"] = [track["box"][0] + dx, track["box"][1] + dy, track["box"][2] + dx, track["box"][3] + dy]
+        track["moved"] = [track["moved"][0] + dx, track["moved"][1] + dy]
         for p in track["points"]:
             p[0] += dx
             p[1] += dy
 
     # ---------- when the AI looked ----------
 
-    def update(self, people, now, far_checked=True):
+    def update(self, people, now, far_checked=True, index=None):
         # far_checked: did this AI check look closely at the far band? If not, far people
         # it didn't see are not counted as missed (they were simply not looked for).
+        # index: the picture number the AI looked at. The AI is slow, so its answer is for an
+        # older picture: boxes are compared where each person WAS then, and moved forward to now
+        # (before, the box jumped back to the old place and the outline trailed behind).
         self.far_checked = far_checked
         sure = [p for p in people if p["conf"] >= self.new_confidence]
         unsure = [p for p in people if p["conf"] < self.new_confidence]
-        left = self.match(sure, self.active, now)
+        left = self.match(sure, self.active, now, index)
         rest = [t for t in self.active if t["seen"] != now]
-        self.match(unsure, rest, now)
+        self.match(unsure, rest, now, index)
         left = self.revive(left, now)
         for d in left:
             self.add(d, now)
         self.age_tracks(now)
         self.merge_doubles(now)
 
-    def match(self, dets, tracks, now):
+    def match(self, dets, tracks, now, index=None):
         pairs = []
         for i, d in enumerate(dets):
             for t in tracks:
-                s = iou(d["box"], t["box"])
+                mx, my = self.moved_since(t, index)
+                b = t["box"]
+                then = [b[0] - mx, b[1] - my, b[2] - mx, b[3] - my]   # where this person was in the AI's picture
+                s = iou(d["box"], then)
                 if s >= MATCH_IOU:
                     pairs.append((s, i, t["key"]))
         pairs.sort(reverse=True)
@@ -199,12 +239,18 @@ class Tracker:
                 continue
             used_d.add(i)
             used_t.add(key)
-            self.refresh(by_key[key], dets[i], now)
+            self.refresh(by_key[key], dets[i], now, self.moved_since(by_key[key], index))
         return [d for i, d in enumerate(dets) if i not in used_d]
 
-    def refresh(self, t, d, now):
-        t["box"] = list(d["box"])
-        t["points"] = self.smooth_points(t, d.get("points", []), now)
+    def refresh(self, t, d, now, shift=(0.0, 0.0)):
+        # shift: how far the person moved since the AI's picture; the AI's box is moved by it
+        mx, my = shift
+        b = d["box"]
+        t["box"] = [b[0] + mx, b[1] + my, b[2] + mx, b[3] + my]
+        t["flow_pts"] = None   # the box moved to the AI's answer: pick new flow points inside it
+        points = [[p[0] + mx, p[1] + my, p[2]] for p in d.get("points", [])]
+        t["points"] = self.smooth_points(t, points, now)
+        t["new_points"] = True     # the brain only reads head angles from fresh AI points
         t["conf"] = d["conf"]
         t["seen"] = now
         t["hits"] += 1
@@ -264,7 +310,8 @@ class Tracker:
     def add(self, d, now):
         t = {"key": self.next_key, "number": None, "box": list(d["box"]), "conf": d["conf"],
              "points": [list(p) for p in d.get("points", [])], "filters": [], "seen": now, "born": now,
-             "hits": 1, "misses": 0, "colours": torso_colours(self.frame, d["box"]), "overlap": {}}
+             "hits": 1, "misses": 0, "colours": torso_colours(self.frame, d["box"]), "overlap": {},
+             "moved": [0.0, 0.0], "moved_at": {}, "flow_pts": None}
         self.next_key += 1
         self.active.append(t)
         self.events("created", key=t["key"], reason="new detection conf " + str(round(d["conf"], 2)))
@@ -327,7 +374,8 @@ class Tracker:
             if t["number"] is None:
                 continue
             out.append({"box": list(t["box"]), "conf": t["conf"], "points": [list(p) for p in t["points"]],
-                        "track_id": t["number"], "fresh": t["misses"] == 0})
+                        "track_id": t["number"], "fresh": t["misses"] == 0,
+                        "new_points": t.get("new_points", False)})
         return out
 
     def take_merges(self):

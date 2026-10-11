@@ -18,10 +18,11 @@ def new_person_state(name, box):
         "box": box,
         "last_seen": None,       # when we last saw this person
         "present": False,
-        "recent_yaws": [],       # last few head angles (for smoothing)
+        "recent_yaws": [],       # (time, angle) of the last second (for smoothing)
         "yaw_history": [],       # (time, angle) for the last 2 minutes
         "yaw_now": None,
         "last_yaw_time": None,   # when we last saw the head angle
+        "yaw_ok": False,         # did the last fresh AI answer show the face?
         "baseline": None,
         "deviation": None,
         "away_start": None,      # when they started looking away
@@ -205,6 +206,60 @@ def merge_people(people_states, kept_name, gone_name):
     people_states.remove(gone)
 
 
+def take_head_angle(state, person, now):
+    # one head-angle sample from a fresh AI answer
+    yaw = head_yaw(person["points"])
+    state["yaw_ok"] = yaw is not None   # could the AI see the face this time?
+    if yaw is None:
+        return
+    # the face was hidden for a while (head down writing): the old angles and the
+    # look-away timer are out of date, so start fresh
+    if state["last_yaw_time"] is not None and now - state["last_yaw_time"] > config.FACE_GONE_SECONDS:
+        state["recent_yaws"] = []
+        state["away_start"] = None
+        state["long_alerted"] = False
+    state["last_yaw_time"] = now
+
+    # smooth over the last second (not the last N pictures: the AI only looks about once a second)
+    state["recent_yaws"].append((now, yaw))
+    state["recent_yaws"] = [r for r in state["recent_yaws"] if now - r[0] <= config.YAW_SMOOTH_SECONDS]
+    smooth = statistics.median([r[1] for r in state["recent_yaws"]])
+    state["yaw_now"] = smooth
+
+    state["yaw_history"].append((now, smooth))
+    state["yaw_history"] = [h for h in state["yaw_history"] if now - h[0] <= config.BASELINE_SECONDS]
+    if len(state["yaw_history"]) >= config.BASELINE_MIN_SAMPLES:
+        baseline = statistics.median([h[1] for h in state["yaw_history"]])
+        state["baseline"] = baseline
+        state["deviation"] = smooth - baseline
+
+
+def check_look_away(state, dev, now, alerts):
+    # runs on every screen picture, so the look-away timer is exact even between AI checks
+    if abs(dev) <= config.YAW_THRESHOLD:
+        state["away_start"] = None
+        state["long_alerted"] = False
+        return
+    if state["away_start"] is None:
+        state["away_start"] = now
+        state["away_counted"] = False
+    how_long = now - state["away_start"]
+
+    if how_long >= config.LOOK_AWAY_SECONDS and not state["away_counted"]:
+        state["look_events"].append(now)
+        state["away_counted"] = True
+        state["total_looks"] = state["total_looks"] + 1
+
+    if how_long >= config.LONG_LOOK_SECONDS and not state["long_alerted"]:
+        side = "left" if dev < 0 else "right"
+        # only mark it as alerted when the alert really went out (not blocked by the cooldown)
+        if make_alert(state, "long_look",
+                      state["name"] + " stared " + side + " for " + str(round(how_long, 1)) + "s",
+                      now, alerts):
+            state["long_alerted"] = True
+            state["total_long_looks"] = state["total_long_looks"] + 1
+
+
 def update_person(state, person, phone_seen, now, device="phone"):
     alerts = []
 
@@ -226,53 +281,13 @@ def update_person(state, person, phone_seen, now, device="phone"):
         state["deviation"] = None
     else:
         state["present"] = True
-        yaw = head_yaw(person["points"])
-        if yaw is not None:
-            # the face was hidden for a while (head down writing): the old angles and the
-            # look-away timer are out of date, so start fresh
-            if state["last_yaw_time"] is not None and now - state["last_yaw_time"] > config.LOOK_AWAY_SECONDS:
-                state["recent_yaws"] = []
-                state["away_start"] = None
-                state["long_alerted"] = False
-            state["last_yaw_time"] = now
-
-            state["recent_yaws"].append(yaw)
-            if len(state["recent_yaws"]) > config.YAW_SMOOTH_FRAMES:
-                state["recent_yaws"].pop(0)
-            smooth = statistics.median(state["recent_yaws"])
-            state["yaw_now"] = smooth
-
-            state["yaw_history"].append((now, smooth))
-            state["yaw_history"] = [h for h in state["yaw_history"] if now - h[0] <= config.BASELINE_SECONDS]
-
-            if len(state["yaw_history"]) >= config.BASELINE_MIN_SAMPLES:
-                baseline = statistics.median([h[1] for h in state["yaw_history"]])
-                dev = smooth - baseline
-                state["baseline"] = baseline
-                state["deviation"] = dev
-
-                if abs(dev) > config.YAW_THRESHOLD:
-                    if state["away_start"] is None:
-                        state["away_start"] = now
-                        state["away_counted"] = False
-                    how_long = now - state["away_start"]
-
-                    if how_long >= config.LOOK_AWAY_SECONDS and not state["away_counted"]:
-                        state["look_events"].append(now)
-                        state["away_counted"] = True
-                        state["total_looks"] = state["total_looks"] + 1
-
-                    if how_long >= config.LONG_LOOK_SECONDS and not state["long_alerted"]:
-                        side = "left" if dev < 0 else "right"
-                        # only mark it as alerted when the alert really went out (not blocked by the cooldown)
-                        if make_alert(state, "long_look",
-                                      state["name"] + " stared " + side + " for " + str(round(how_long, 1)) + "s",
-                                      now, alerts):
-                            state["long_alerted"] = True
-                            state["total_long_looks"] = state["total_long_looks"] + 1
-                else:
-                    state["away_start"] = None
-                    state["long_alerted"] = False
+        # Head angles only come from FRESH AI points. Between AI checks the tracker just slides the
+        # old points along, so reading them every screen picture counted the same old angle again
+        # and again (and made the 5-picture smoothing worth several seconds of delay).
+        if person.get("new_points", True):
+            take_head_angle(state, person, now)
+        if state["yaw_ok"] and state["deviation"] is not None:
+            check_look_away(state, state["deviation"], now, alerts)
 
     # ----- too many look aways -----
     state["look_events"] = [t for t in state["look_events"] if now - t <= config.LOOK_COUNT_WINDOW]
@@ -300,9 +315,13 @@ def update_person(state, person, phone_seen, now, device="phone"):
 NOT_ALERT_ITEMS = ["paper", "pen"]
 
 
-def update_all(people_states, people, phones, now):
+def update_all(people_states, people, phones, now, fresh=True):
+    # fresh: did a new AI answer land on this picture? Between AI checks the last result is only
+    # held on screen, so it must not count as another sighting (one blip used to reach 3 hits in 0.1 s)
     matches = match_people(people, people_states, now)
     phones = [ph for ph in phones if ph.get("label") not in NOT_ALERT_ITEMS]
+    if not fresh:
+        phones = []
     device_labels = {}
     phone_people = match_phones_to_people(phones, matches, device_labels)
     all_alerts = []

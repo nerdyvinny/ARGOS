@@ -51,19 +51,21 @@ CROP_BOTTOM = 0.85
 FORGET_PERSON_SECONDS = 10       # someone unseen this long gets a new "Person N" when they come back
 
 # ---------- looking at other desks ----------
-YAW_SMOOTH_FRAMES = 5            # average the head angle over a few frames
+YAW_SMOOTH_SECONDS = 1.0         # head angle = middle value of the last second of AI checks
+FACE_GONE_SECONDS = 3.0          # face unseen this long (head down writing) = start the look timer fresh
 BASELINE_SECONDS = 120           # each person's "normal" head angle = median of last 2 min
 BASELINE_MIN_SAMPLES = 15        # need this many samples before we judge someone
 YAW_THRESHOLD = 0.25             # how far the head has to turn from normal
-LOOK_AWAY_SECONDS = 2.0          # turned this long = 1 "look away"
-LOOK_COUNT_WINDOW = 300          # count look aways in the last 5 minutes
-LOOK_COUNT_LIMIT = 4             # this many look aways = alert
-LONG_LOOK_SECONDS = 6.0          # one really long look = alert right away
+LOOK_AWAY_SECONDS = 1.0          # turned this long = 1 "look away"
+LOOK_COUNT_WINDOW = 120          # count look aways in the last 2 minutes
+LOOK_COUNT_LIMIT = 3             # this many look aways = alert
+LONG_LOOK_SECONDS = 3.0          # one long stare = alert right away
 
 # ---------- phone ----------
-PHONE_WINDOW_SECONDS = 4.0       # look at the last 4 seconds (we only get ~2 pictures a second,
-                                 # so 2 seconds was too short to ever see the phone 3 times)
-PHONE_MIN_HITS = 3               # phone seen this many times in that window = alert
+PHONE_WINDOW_SECONDS = 4.0       # look at the last 4 seconds of AI checks
+PHONE_MIN_HITS = 1               # confirmed device seen on this many AI checks in that window = alert.
+                                 # 1 because vision/devices.py already needs it in 2 of the last 3 checks
+                                 # (with only real AI checks counting, 3 hits in 4 s almost never happened)
 
 # ---------- alerts ----------
 ALERT_COOLDOWN_SECONDS = 30      # don't spam the same alert for the same person
@@ -81,3 +83,10 @@ DETECT_MODE = "fast"             # "fast": whole picture + close-ups (normal wid
 DEVICE_CONFIRM = True            # device must be seen in 2 of the last 3 AI checks (+ watch size/shape checks)
 TRACE = True                     # write perf/trace.csv (time per stage, devices, CPU/GPU use, tracker events)
 SHOW_STOPWATCH = False           # draw a clock on the picture for the delay test
+
+# ---------- speed on a CPU-only laptop (round 3, measured on a 30 fps replay) ----------
+AI_PROCESS = True                # the AI runs in its own process, so it can't block the screen loop
+AI_LOW_PRIORITY = False          # low priority starved the AI (0.34 checks/s); normal + 3 threads: 0.86
+AI_THREADS = 3                   # CPU threads the AI may use (the screen loop keeps the rest)
+SCREEN_CV_THREADS = 1            # OpenCV in the screen loop runs on 1 thread (its helper threads waited
+                                 # behind the AI: one resize took 75 ms instead of 3 ms)

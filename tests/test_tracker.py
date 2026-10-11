@@ -25,7 +25,31 @@ def feed(t, dets, now):
     t.update(dets, now)
 
 
+def moving_frame(x):
+    # plain picture with a speckled "person" whose left edge is at x (optical flow needs texture)
+    f = np.full((480, 640, 3), 90, dtype=np.uint8)
+    rng = np.random.default_rng(7)
+    f[100:460, x:x + 160] = rng.integers(0, 255, (360, 160, 3), dtype=np.uint8)
+    return f
+
+
 class TrackerTests(unittest.TestCase):
+
+    def test_old_ai_answer_is_moved_forward_to_where_the_person_is_now(self):
+        # The AI answers for an older picture. The box must end up where the person is NOW,
+        # not jump back to where they were when the AI looked (the outline lagged behind).
+        t = tr.Tracker(0.4)
+        for i in range(3):
+            t.predict(moving_frame(100), i * 0.03, index=i)
+            t.update([det([100, 100, 260, 460])], i * 0.03, index=i)
+        x = 100
+        for i in range(3, 9):                 # walks right 10 px per picture
+            x = x + 10
+            t.predict(moving_frame(x), i * 0.03, index=i)
+        # AI result for picture 4 (person at 120) arrives while picture 8 (person at 160) is on screen
+        t.update([det([120, 100, 280, 460])], 9 * 0.03, index=4)
+        box = t.current()[0]["box"]
+        self.assertAlmostEqual(box[0], 160, delta=4)
 
     def test_new_person_needs_three_sightings_before_a_number(self):
         t = tr.Tracker(0.4)

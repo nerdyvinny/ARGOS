@@ -24,6 +24,7 @@ from settings import config
 # OpenVINO copies of the models run 2-3x faster on an Intel CPU (make them with tools\export_openvino.py).
 # When a "<name>_openvino_model" folder is next to the .pt file we use it, otherwise the .pt file.
 USE_OPENVINO = getattr(config, "USE_OPENVINO", True)
+AI_THREADS = getattr(config, "AI_THREADS", None)   # CPU threads the AI may use (None = all of them)
 
 pose_model = None
 object_model = None
@@ -66,7 +67,32 @@ def load_models():
         if world_file == WORLD_MODEL:
             world_model.set_classes(list(WORLD_WORDS.keys()))   # the OpenVINO copy already has the words
     warm_up()
+    if AI_THREADS:
+        for m in [pose_model, object_model, world_model]:
+            limit_threads(m, AI_THREADS)
+        warm_up()   # the rebuilt models compile again on first use
     print("Models loaded")
+
+
+def limit_threads(m, threads):
+    # OpenVINO uses every CPU thread by default, so the screen loop got almost none (it ran at 15 fps
+    # with a 30 fps camera). Rebuild the OpenVINO model so it uses only `threads` CPU threads.
+    if m is None:
+        return
+    backend = getattr(getattr(getattr(m, "predictor", None), "model", None), "backend", None)
+    compile_fn = getattr(backend, "compile_model", None)
+    if compile_fn is None or not hasattr(backend, "ov_compiled_model"):
+        return   # not an OpenVINO model (e.g. a .pt file): nothing to limit
+    folder = str(getattr(m, "model_name", "") or getattr(m, "ckpt_path", "") or "")
+    if not os.path.isdir(folder):
+        return
+    xml = [f for f in os.listdir(folder) if f.endswith(".xml")]
+    if not xml:
+        return
+    settings = dict(compile_fn.keywords.get("config", {}))
+    settings["INFERENCE_NUM_THREADS"] = threads
+    # straight on the CPU: "AUTO" hides the thread setting, and the laptop's GPU can't run the models anyway
+    backend.ov_compiled_model = compile_fn.func(os.path.join(folder, xml[0]), device_name="CPU", config=settings)
 
 
 def warm_up():

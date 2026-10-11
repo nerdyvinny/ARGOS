@@ -96,7 +96,7 @@ It runs separately from the camera for now. The link between the two is a placeh
   - **AirPods / Beats**, from Apple's status message. They send it while in use, which is how iPhones show their battery.
   - **Most Android earbuds**, from the Google Fast Pair signal.
   - **New LE Audio** headphones.
-  - **Headphone-like names**, such as "Buds", "WH-1000XM5", JBL, Bose or Jabra.
+  - **Headphone-like names**, such as "AirBuds", "WH-1000XM5", JBL, Bose or Jabra.
 - Signal strength gives a rough distance: very close, in the room, or far.
 
 ### Bands it listens to

@@ -13,7 +13,8 @@
 #
 # Setup: the antenna sits at the FRONT of the room next to the camera, facing the
 # students, with a metal sheet behind it (see rf_config.py). Order: baseline, fovtest, monitor.
-# The camera link is still a placeholder (see camera_confirms below).
+# "monitor" and "bluetooth" write rf_status.json, which the camera dashboard reads
+# to cross-check close signals with what the camera sees (see camera_confirms below).
 #
 # "monitor" also checks Bluetooth for headphones in the background.
 # Bluetooth needs Python 3.12, so for that use  py -3.12  instead of  py
@@ -461,29 +462,33 @@ def write_log(rows, history, camera):
 # ---------------- camera link (PLACEHOLDER: not hooked up yet) ----------------
 
 def camera_confirms():
-    # PLACEHOLDER. Gives back:
-    #   True  = the camera sees something that explains the RF (a phone, someone on their phone)
-    #   False = the camera sees nothing suspicious in its view
-    #   None  = the camera is not connected yet (what it always says for now)
-    #
-    # The idea: the antenna and camera both face the students, so a phone the
-    # camera can see should also be the one making the RF. If the RF goes up but
-    # the camera sees nothing, the phone is probably outside the camera's view
-    # (behind it, in the hallway, next room) and we can ignore it.
-    #
-    # TODO (with the team) - how to connect it, pick ONE:
-    #   a) app/main.py saves what it sees every second to a small file, e.g.
-    #      camera_status.json = {"time": 1700000000, "phone_people": ["Person 4"]}
-    #      and here we read it:
-    #          data = json.load(open("camera_status.json"))
-    #          if time.time() - data["time"] > 5: return None     # camera stopped
-    #          return len(data["phone_people"]) > 0
-    #   b) run the RF monitor inside app/main.py and ask it directly, e.g.
-    #          return len(latest_phone_detections) > 0             # from vision/detector.py
-    #
-    # Also TODO: when the camera says yes, tell rules/brain.py so that person's
-    # score goes up a little (Person 3's file, ask first).
-    return None
+    # Asks the camera program what it sees. Gives back:
+    #   True  = the camera saw someone with a device in the last few seconds
+    #   False = the camera is running but sees no device
+    #   None  = the camera program is not running (no file, or the file is old)
+    # The camera dashboard (ui/dashboard.py) writes camera_status.json about once a second.
+    try:
+        with open(config.CAMERA_STATUS_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if time.time() - data.get("time", 0) > config.CAMERA_STALE_SECONDS:
+        return None
+    return len(data.get("phone_people", [])) > 0
+
+
+def write_status(active_bands, watcher, radio_on):
+    # Tell the camera program what the radio and Bluetooth hear right now (see rf_config.py).
+    bluetooth = []
+    if watcher is not None:
+        for d in watcher.current():
+            bluetooth.append({"address": d["address"], "name": d["name"], "rssi": d["rssi"],
+                              "distance": d["distance"], "why": d["why"]})
+    data = {"time": time.time(), "radio": radio_on, "active_bands": active_bands, "bluetooth": bluetooth}
+    temp = config.RF_STATUS_FILE + ".tmp"       # write then rename, so the reader never sees half a file
+    with open(temp, "w") as f:
+        json.dump(data, f)
+    os.replace(temp, config.RF_STATUS_FILE)
 
 
 # ---------------- fovtest: only count phones in front of the camera ----------------
@@ -636,6 +641,7 @@ def run_bluetooth(simulate, max_scans, web):
             for d in new:
                 print("NEW headphones:", d["name"], "-", d["distance"], "-", d["why"])
             show_bluetooth(watcher)
+            write_status([], watcher, False)
         keep_page_open(address)
     except KeyboardInterrupt:
         print("\nStopped")
@@ -722,7 +728,7 @@ def main():
             else:
                 print("Only counting phones in front of the camera for:", ", ".join(fov))
         if config.CAMERA_CONFIRM:
-            print("CAMERA_CONFIRM is on, but the camera link is still a placeholder (see camera_confirms)")
+            print("CAMERA_CONFIRM is on: bands only count as ACTIVE when the camera also sees a device")
 
         watcher = None
         if mode == "monitor" and config.BT_CHECK:
@@ -740,8 +746,11 @@ def main():
             for r in rows:
                 name = r["band"]["name"]
                 history[name] = history[name][1:] + [is_suspicious(r, fov)]
-            camera = camera_confirms()                   # placeholder: always None for now
+            camera = camera_confirms()
             print_table(rows, history, sweep_number, camera)
+            if mode == "monitor":
+                active_now = [r["band"]["name"] for r in rows if band_status(r, history, camera)[1]]
+                write_status(active_now, watcher, True)
 
             waterfall.append((time.strftime("%H:%M:%S"), step_heat(steps, now, baseline)))
             waterfall = waterfall[-config.WATERFALL_ROWS:]

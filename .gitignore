@@ -34,3 +34,8 @@ perf/clip2/
 perf/trace*.csv
 research/labels2/frames/
 *_openvino_model/
+
+# live files shared by the RF monitor and the camera dashboard
+rf_detect/rf_status.json
+rf_detect/camera_status.json
+rf_detect/*.json.tmp

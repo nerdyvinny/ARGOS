@@ -70,9 +70,15 @@ FOV_TEST_SWEEPS = 5          # sweeps measured at each test spot
 FOV_FILE = os.path.join(FOLDER, "rf_fov.json")
 SIM_FOV_FILE = os.path.join(FOLDER, "rf_fov_sim.json")      # used with --simulate
 
-# ---------- camera link (PLACEHOLDER: not hooked up yet) ----------
+# ---------- camera link ----------
+# The RF monitor and the camera program (app/main.py) talk through two small files:
+#   rf_status.json      written HERE every sweep: which bands are ACTIVE + nearby headphones
+#   camera_status.json  written by the camera dashboard: who the camera saw with a device
 CAMERA_CONFIRM = False       # True = only say ACTIVE when the camera also sees something
 CAMERA_FOV_DEGREES = 120     # how wide the camera sees. Only used as a note for now.
+RF_STATUS_FILE = os.path.join(FOLDER, "rf_status.json")
+CAMERA_STATUS_FILE = os.path.join(FOLDER, "camera_status.json")
+CAMERA_STALE_SECONDS = 5     # camera file older than this = camera not running
 
 # ---------- web page (shown at http://localhost:5050) ----------
 WEB_PORT = 5050              # not 5000, that one is the camera dashboard

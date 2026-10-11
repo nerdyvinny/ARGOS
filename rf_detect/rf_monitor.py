@@ -322,15 +322,15 @@ def camera_confirms():
     #
     # TODO (with the team) - how to connect it, pick ONE:
     #   a) app/main.py saves what it sees every second to a small file, e.g.
-    #      camera_status.json = {"time": 1700000000, "phone_desks": ["Desk 4"]}
+    #      camera_status.json = {"time": 1700000000, "phone_people": ["Person 4"]}
     #      and here we read it:
     #          data = json.load(open("camera_status.json"))
     #          if time.time() - data["time"] > 5: return None     # camera stopped
-    #          return len(data["phone_desks"]) > 0
+    #          return len(data["phone_people"]) > 0
     #   b) run the RF monitor inside app/main.py and ask it directly, e.g.
     #          return len(latest_phone_detections) > 0             # from vision/detector.py
     #
-    # Also TODO: when the camera says yes, tell rules/brain.py so that desk's
+    # Also TODO: when the camera says yes, tell rules/brain.py so that person's
     # score goes up a little (Person 3's file, ask first).
     return None
 

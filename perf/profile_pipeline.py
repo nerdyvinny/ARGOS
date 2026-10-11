@@ -110,7 +110,7 @@ def camera_only(cap, seconds):
     return count / elapsed, read_ms
 
 
-def full_pipeline(cap, seconds, desk_states):
+def full_pipeline(cap, seconds, people_states):
     names = ["capture/decode", "tile+crop (resize/convert)", "body pose + face/eye points (pose model)",
              "phone (object model)", "rules (brain)", "draw boxes", "resize to 1280",
              "jpeg encode for dashboard", "display (imshow+waitKey)"]
@@ -148,12 +148,12 @@ def full_pipeline(cap, seconds, desk_states):
 
         now = time.perf_counter() - start
         t = time.perf_counter()
-        alerts, matches = brain.update_all(desk_states, people, phones, now)
+        alerts, matches = brain.update_all(people_states, people, phones, now)
         times["rules (brain)"].append((time.perf_counter() - t) * 1000)
         alerts_seen = alerts_seen + len(alerts)
 
         t = time.perf_counter()
-        drawn = app_main.draw(frame, desk_states, matches, phones)
+        drawn = app_main.draw(frame, people_states, matches, phones)
         times["draw boxes"].append((time.perf_counter() - t) * 1000)
 
         t = time.perf_counter()
@@ -164,7 +164,7 @@ def full_pipeline(cap, seconds, desk_states):
         ok_jpg, jpg = cv2.imencode(".jpg", small)
         if ok_jpg:
             dashboard.set_frame(jpg.tobytes())
-        dashboard.set_desks(desk_states)
+        dashboard.set_people(people_states)
         times["jpeg encode for dashboard"].append((time.perf_counter() - t) * 1000)
 
         t = time.perf_counter()
@@ -204,7 +204,7 @@ def main():
         fourcc_text = "".join([chr((fourcc >> (8 * i)) & 0xFF) for i in range(4)])
         print("Opened:", w, "x", h, "| format", repr(fourcc_text), "| driver says", cap.get(cv2.CAP_PROP_FPS), "fps")
 
-        desk_states = brain.load_desks(w, h)
+        people_states = []
         detector.load_models()
 
         # warm up the models so the first slow run is not counted
@@ -223,7 +223,7 @@ def main():
         print("\n--- full pipeline,", seconds, "s ---")
         cpu = CpuSampler()
         cpu.start()
-        proc_fps, names, times, frame_times, alerts_seen, people_counts = full_pipeline(cap, seconds, desk_states)
+        proc_fps, names, times, frame_times, alerts_seen, people_counts = full_pipeline(cap, seconds, people_states)
         cpu.stop()
         pipe_cpu = (float(np.mean(cpu.system)), float(np.mean(cpu.process)))
     finally:

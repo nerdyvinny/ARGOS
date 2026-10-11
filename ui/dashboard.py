@@ -1,5 +1,5 @@
 # Tiny web page for the proctor.  Open http://localhost:5000
-# It shows the live video, every desk's color, and the list of alerts with pictures.
+# It shows the live video, every person's color, and the list of alerts with pictures.
 
 import os
 import time
@@ -12,7 +12,7 @@ lock = threading.Lock()
 
 latest_jpeg = None
 alerts_list = []
-desks_info = []
+people_info = []
 
 
 def set_frame(jpeg_bytes):
@@ -30,10 +30,10 @@ def add_alerts(new_alerts):
             alerts_list.pop(0)
 
 
-def set_desks(desk_states):
-    global desks_info
+def set_people(people_states):
+    global people_info
     info = []
-    for d in desk_states:
+    for d in people_states:
         info.append({
             "name": d["name"],
             "status": d["status"],
@@ -43,7 +43,7 @@ def set_desks(desk_states):
             "phones": d["total_phone_alerts"],
         })
     with lock:
-        desks_info = info
+        people_info = info
 
 
 PAGE = """
@@ -60,8 +60,8 @@ PAGE = """
   .row { display:flex; gap:16px; flex-wrap:wrap; }
   .left { flex:3; min-width:300px; }
   .right { flex:1; min-width:260px; }
-  .desks { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
-  .desk { padding:8px 12px; border-radius:6px; font-size:14px; min-width:90px; }
+  .people { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  .person { padding:8px 12px; border-radius:6px; font-size:14px; min-width:90px; }
   .green { background:#1d5e2b; } .yellow { background:#8a6d00; }
   .red { background:#9b1c1c; } .empty { background:#333; color:#999; }
   .alert { background:#222; border-left:4px solid #e33; padding:8px; margin-bottom:8px; border-radius:4px; font-size:14px; }
@@ -74,7 +74,7 @@ PAGE = """
 <div class="row">
   <div class="left">
     <img id="video" src="/video">
-    <div class="desks" id="desks"></div>
+    <div class="people" id="people"></div>
   </div>
   <div class="right">
     <h3>Alerts</h3>
@@ -85,11 +85,11 @@ PAGE = """
 function refresh() {
   fetch("/data").then(r => r.json()).then(data => {
     let html = "";
-    for (const d of data.desks) {
-      html += '<div class="desk ' + d.status + '"><b>' + d.name + '</b><br>score ' + d.score +
+    for (const d of data.people) {
+      html += '<div class="person ' + d.status + '"><b>' + d.name + '</b><br>score ' + d.score +
               '<br>looks ' + d.looks + ' | phone ' + d.phones + '</div>';
     }
-    document.getElementById("desks").innerHTML = html;
+    document.getElementById("people").innerHTML = html;
 
     let a = "";
     for (const al of data.alerts) {
@@ -133,8 +133,8 @@ def video():
 def data():
     with lock:
         newest_first = list(reversed(alerts_list[-50:]))
-        desks = list(desks_info)
-    return jsonify({"alerts": newest_first, "desks": desks})
+        people = list(people_info)
+    return jsonify({"alerts": newest_first, "people": people})
 
 
 @app.route("/evidence/<path:filename>")

@@ -5,12 +5,10 @@ __pycache__/
 *.pt
 evidence/
 alerts.csv
-desks_check.jpg
 *.mp4
 *.avi
 
 # local data made on each laptop (not code)
-desks.json
 rf_detect/rf_baseline.json
 rf_detect/rf_baseline_sim.json
 rf_detect/rf_log.csv

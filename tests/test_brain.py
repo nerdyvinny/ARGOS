@@ -19,7 +19,7 @@ def person(yaw, nose_conf=0.9):
 
 
 class Clock:
-    # feeds one desk a list of pictures, half a second apart
+    # feeds one person a list of pictures, half a second apart
     def __init__(self, state):
         self.state = state
         self.now = 0.0
@@ -27,7 +27,7 @@ class Clock:
     def run(self, seconds, yaw, nose_conf=0.9):
         alerts = []
         for i in range(int(seconds / STEP)):
-            alerts = alerts + brain.update_desk(self.state, person(yaw, nose_conf), False, self.now)
+            alerts = alerts + brain.update_person(self.state, person(yaw, nose_conf), False, self.now)
             self.now = self.now + STEP
         return alerts
 
@@ -40,7 +40,7 @@ class HeadTurnTests(unittest.TestCase):
 
     # B1
     def test_head_down_gap_does_not_make_a_false_long_stare(self):
-        s = brain.new_desk_state("Desk 1", [0, 0, 200, 200])
+        s = brain.new_person_state("Person 1", [0, 0, 200, 200])
         clock = Clock(s)
         clock.run(10, 0.0)                     # looks straight: learns the normal angle
         clock.run(1.5, 0.6)                    # short glance (1.5 s, less than a "look away")
@@ -51,7 +51,7 @@ class HeadTurnTests(unittest.TestCase):
 
     # B1 (guard: the fix must not break real stares when a face point flickers)
     def test_long_stare_with_flickering_nose_still_alerts(self):
-        s = brain.new_desk_state("Desk 1", [0, 0, 200, 200])
+        s = brain.new_person_state("Person 1", [0, 0, 200, 200])
         clock = Clock(s)
         clock.run(10, 0.0)
         alerts = []
@@ -62,7 +62,7 @@ class HeadTurnTests(unittest.TestCase):
 
     # B6
     def test_long_stare_during_cooldown_alerts_once_cooldown_ends(self):
-        s = brain.new_desk_state("Desk 1", [0, 0, 200, 200])
+        s = brain.new_person_state("Person 1", [0, 0, 200, 200])
         clock = Clock(s)
         clock.run(100, 0.0)                    # long straight history, so the "normal" angle can't drift
         first = clock.run(8, 0.6)              # stare 1 -> alert
@@ -76,15 +76,31 @@ class PhoneMatchTests(unittest.TestCase):
 
     # B2
     def test_phone_goes_to_the_closest_person_not_the_first(self):
-        desks = [brain.new_desk_state("Desk A", [0, 0, 200, 200]),
-                 brain.new_desk_state("Desk B", [200, 0, 400, 200])]
+        states = []
         person_a = {"box": [20, 20, 190, 190], "conf": 0.9, "points": []}
         person_b = {"box": [220, 20, 380, 190], "conf": 0.9, "points": []}
-        matches = brain.match_people_to_desks([person_a, person_b], desks)
-        # phone center (222, 100): inside Desk B and inside person B's own box,
+        matches = brain.match_people([person_a, person_b], states, 0.0)
+        # phone center (222, 100): inside person B's own box,
         # but also inside person A's slightly bigger "near" box
         phone = {"box": [218, 95, 226, 105], "conf": 0.5}
-        self.assertEqual(brain.match_phones_to_desks([phone], desks, matches), {"Desk B"})
+        self.assertEqual(brain.match_phones_to_people([phone], matches), {"Person 2"})
+
+
+class FollowPeopleTests(unittest.TestCase):
+
+    def test_same_person_keeps_their_name_when_they_move_a_little(self):
+        states = []
+        brain.match_people([{"box": [0, 0, 100, 200], "conf": 0.9, "points": []}], states, 0.0)
+        matches = brain.match_people([{"box": [10, 5, 110, 205], "conf": 0.9, "points": []}], states, 0.5)
+        self.assertEqual(list(matches.keys()), ["Person 1"])
+        self.assertEqual(len(states), 1)
+
+    def test_new_person_gets_a_new_name(self):
+        states = []
+        brain.match_people([{"box": [0, 0, 100, 200], "conf": 0.9, "points": []}], states, 0.0)
+        matches = brain.match_people([{"box": [0, 0, 100, 200], "conf": 0.9, "points": []},
+                                      {"box": [300, 0, 400, 200], "conf": 0.9, "points": []}], states, 0.5)
+        self.assertEqual(sorted(matches.keys()), ["Person 1", "Person 2"])
 
 
 if __name__ == "__main__":

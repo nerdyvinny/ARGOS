@@ -5,7 +5,6 @@
 import os
 import io
 import sys
-import json
 import tempfile
 import contextlib
 import unittest
@@ -63,12 +62,7 @@ class MainLoopTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        desks_file = os.path.join(self.tmp.name, "desks.json")
-        with open(desks_file, "w") as f:
-            json.dump({"frame_width": W, "frame_height": H,
-                       "desks": [{"name": "Desk 1", "box": [0, 0, W, H]}]}, f)
         self.patches = [
-            mock.patch.object(config, "DESKS_FILE", desks_file),
             mock.patch.object(config, "EVIDENCE_FOLDER", os.path.join(self.tmp.name, "evidence")),
             mock.patch.object(config, "ALERTS_CSV", os.path.join(self.tmp.name, "alerts.csv")),
             mock.patch.object(config, "SHOW_WINDOW", False),
@@ -89,9 +83,9 @@ class MainLoopTests(unittest.TestCase):
     def run_main(self, video, detect):
         real_update_all = brain.update_all
 
-        def record(desk_states, people, phones, now):
+        def record(people_states, people, phones, now):
             self.times.append(now)
-            alerts, matches = real_update_all(desk_states, people, phones, now)
+            alerts, matches = real_update_all(people_states, people, phones, now)
             self.alerts = self.alerts + alerts
             return alerts, matches
 

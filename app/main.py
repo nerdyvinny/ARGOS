@@ -39,10 +39,12 @@ def exam_time_text(seconds):
     return str(seconds // 60).zfill(2) + ":" + str(seconds % 60).zfill(2)
 
 
-def draw(frame, desk_states, matches, phones):
+def draw(frame, people_states, matches, phones):
     img = frame.copy()
 
-    for d in desk_states:
+    for d in people_states:
+        if d["name"] not in matches:
+            continue   # only draw people we can see right now
         x1, y1, x2, y2 = [int(v) for v in d["box"]]
         color = COLORS.get(d["status"], (255, 255, 255))
         thick = 4 if d["status"] == "red" else 2
@@ -79,10 +81,10 @@ def resize_to_width(img, width):
     return cv2.resize(img, (width, int(h * scale)))
 
 
-def save_evidence(drawn_frame, desk_state, alert):
-    # save a close up of the desk (a bit bigger than the desk box)
+def save_evidence(drawn_frame, person_state, alert):
+    # save a close up of the person (a bit bigger than their box)
     h, w = drawn_frame.shape[:2]
-    x1, y1, x2, y2 = desk_state["box"]
+    x1, y1, x2, y2 = person_state["box"]
     pad_x = (x2 - x1) * 0.5
     pad_y = (y2 - y1) * 0.5
     x1 = int(max(0, x1 - pad_x))
@@ -93,7 +95,7 @@ def save_evidence(drawn_frame, desk_state, alert):
     if crop.size == 0:
         crop = drawn_frame
 
-    name = desk_state["name"].replace(" ", "_")
+    name = person_state["name"].replace(" ", "_")
     file_name = name + "_" + alert["kind"] + "_" + str(int(time.time() * 1000)) + ".jpg"
     cv2.imwrite(os.path.join(config.EVIDENCE_FOLDER, file_name), crop)
     return file_name
@@ -104,23 +106,19 @@ def write_csv(alert):
     with open(config.ALERTS_CSV, "a", newline="") as f:
         writer = csv.writer(f)
         if new_file:
-            writer.writerow(["clock", "exam_time", "desk", "kind", "message", "image"])
-        writer.writerow([alert["clock"], alert["exam_time"], alert["desk"], alert["kind"],
+            writer.writerow(["clock", "exam_time", "person", "kind", "message", "image"])
+        writer.writerow([alert["clock"], alert["exam_time"], alert["person"], alert["kind"],
                          alert["message"], alert["image"]])
 
 
 def main():
     source = get_source()
 
-    if not os.path.exists(config.DESKS_FILE):
-        print("No", config.DESKS_FILE, "found. Run: python -m tools.setup_desks")
-        return
-
     cap = camera.open_camera(source)
     if cap is None:
         return
 
-    desk_states = []     # set early so the summary still works after an early Ctrl+C
+    people_states = []   # set early so the summary still works after an early Ctrl+C
     total_alerts = 0
     try:
         is_file = isinstance(source, str)
@@ -142,9 +140,6 @@ def main():
 
         h, w = frame.shape[:2]
         print("Video size:", w, "x", h)
-
-        desk_states = brain.load_desks(w, h)
-        print("Loaded", len(desk_states), "desks")
 
         detector.load_models()
         os.makedirs(config.EVIDENCE_FOLDER, exist_ok=True)
@@ -177,17 +172,17 @@ def main():
                 now = time.time() - start
 
             people, phones = detector.detect(frame)
-            alerts, matches = brain.update_all(desk_states, people, phones, now)
-            drawn = draw(frame, desk_states, matches, phones)
+            alerts, matches = brain.update_all(people_states, people, phones, now)
+            drawn = draw(frame, people_states, matches, phones)
 
             for a in alerts:
-                desk_state = None
-                for d in desk_states:
-                    if d["name"] == a["desk"]:
-                        desk_state = d
+                person_state = None
+                for d in people_states:
+                    if d["name"] == a["person"]:
+                        person_state = d
                 a["clock"] = time.strftime("%H:%M:%S")
                 a["exam_time"] = exam_time_text(now)
-                a["image"] = save_evidence(drawn, desk_state, a)
+                a["image"] = save_evidence(drawn, person_state, a)
                 write_csv(a)
                 total_alerts = total_alerts + 1
                 print("[ALERT]", a["exam_time"], a["message"])
@@ -196,7 +191,7 @@ def main():
 
             if config.DASHBOARD:
                 dashboard.add_alerts(alerts)
-                dashboard.set_desks(desk_states)
+                dashboard.set_people(people_states)
                 ok_jpg, jpg = cv2.imencode(".jpg", small)
                 if ok_jpg:
                     dashboard.set_frame(jpg.tobytes())
@@ -222,7 +217,7 @@ def main():
     print("")
     print("===== SUMMARY =====")
     print("Total alerts:", total_alerts)
-    for d in sorted(desk_states, key=lambda x: x["score"], reverse=True):
+    for d in sorted(people_states, key=lambda x: x["score"], reverse=True):
         print(d["name"], "| score", d["score"], "| looks", d["total_looks"],
               "| long looks", d["total_long_looks"], "| phone alerts", d["total_phone_alerts"])
 

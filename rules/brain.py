@@ -1,42 +1,22 @@
 # The "brain" decides who is cheating.
-# Every desk has its own memory (a dictionary) that we update every frame.
+# Every person has their own memory (a dictionary) that we update every frame.
 #
 # Big idea:
-#   - We do NOT need to know WHO the student is. The desk IS the ID.
+#   - We do NOT need to know WHO the student is. We follow each person's box
+#     from one picture to the next and call them "Person 1", "Person 2"...
 #   - Every person has a different "normal" head angle (because the camera sees
-#     each desk from a different side). So we learn each person's normal angle
+#     each person from a different side). So we learn each person's normal angle
 #     and only care when they turn AWAY from their own normal.
 
-import json
 import statistics
 from settings import config
 
 
-# ---------------- desks ----------------
-
-def load_desks(frame_w, frame_h):
-    with open(config.DESKS_FILE) as f:
-        data = json.load(f)
-
-    # if the camera picture size changed since setup, stretch the boxes to fit
-    sx = 1.0
-    sy = 1.0
-    if data.get("frame_width") and data.get("frame_height"):
-        sx = frame_w / data["frame_width"]
-        sy = frame_h / data["frame_height"]
-
-    states = []
-    for d in data["desks"]:
-        b = d["box"]
-        box = [b[0] * sx, b[1] * sy, b[2] * sx, b[3] * sy]
-        states.append(new_desk_state(d["name"], box))
-    return states
-
-
-def new_desk_state(name, box):
+def new_person_state(name, box):
     return {
         "name": name,
         "box": box,
+        "last_seen": None,       # when we last saw this person
         "present": False,
         "recent_yaws": [],       # last few head angles (for smoothing)
         "yaw_history": [],       # (time, angle) for the last 2 minutes
@@ -114,41 +94,53 @@ def head_yaw(points):
     return yaw
 
 
-# ---------------- matching people / phones to desks ----------------
+# ---------------- following people / matching phones ----------------
 
-def match_people_to_desks(people, desk_states):
-    # gives back a dictionary: desk name -> person
+def match_people(people, people_states, now):
+    # gives back a dictionary: person name -> detected person
+    # Each detected person goes to the remembered person whose last box overlaps it most.
+    # Someone nobody matches becomes a new "Person N".
     matches = {}
-    best_overlap = {}
-    for p in people:
-        p_area = box_area(p["box"])
-        if p_area <= 0:
+    taken = set()
+    pairs = []
+    for i in range(len(people)):
+        for s in people_states:
+            if s["last_seen"] is not None and now - s["last_seen"] > config.FORGET_PERSON_SECONDS:
+                continue   # gone too long, don't reuse this name
+            a = people[i]["box"]
+            b = s["box"]
+            inter = overlap_area(a, b)
+            union = box_area(a) + box_area(b) - inter
+            if union > 0 and inter / union >= 0.3:
+                pairs.append((inter / union, i, s["name"]))
+    # best overlaps first, so each person and each name is used once
+    pairs.sort(reverse=True)
+    for score, i, name in pairs:
+        if i in taken or name in matches:
             continue
-        best_desk = None
-        best = 0
-        for d in desk_states:
-            o = overlap_area(p["box"], d["box"]) / p_area
-            if o > best:
-                best = o
-                best_desk = d["name"]
-        if best_desk is None or best < 0.3:
-            continue   # this person is not at any desk (maybe the proctor walking)
-        # if 2 people match the same desk, keep the one that fits better
-        if best_desk not in matches or best > best_overlap[best_desk]:
-            matches[best_desk] = p
-            best_overlap[best_desk] = best
+        matches[name] = people[i]
+        taken.add(i)
+    for i in range(len(people)):
+        if i not in taken:
+            name = "Person " + str(len(people_states) + 1)
+            people_states.append(new_person_state(name, people[i]["box"]))
+            matches[name] = people[i]
+    for s in people_states:
+        if s["name"] in matches:
+            s["box"] = matches[s["name"]]["box"]
+            s["last_seen"] = now
     return matches
 
 
-def match_phones_to_desks(phones, desk_states, matches, labels=None):
-    # gives back a set of desk names that have a phone
-    desks_with_phone = set()
+def match_phones_to_people(phones, matches, labels=None):
+    # gives back a set of person names that have a phone
+    people_with_phone = set()
     for ph in phones:
         b = ph["box"]
         cx = (b[0] + b[2]) / 2
         cy = (b[1] + b[3]) / 2
         found = None
-        # first: is the phone near a person we know? (if near 2 people, take the closest one)
+        # is the phone near a person? (if near 2 people, take the closest one)
         closest = None
         for name in matches:
             pb = matches[name]["box"]
@@ -157,17 +149,11 @@ def match_phones_to_desks(phones, desk_states, matches, labels=None):
                 if closest is None or dist < closest:
                     closest = dist
                     found = name
-        # second: is the phone inside a desk box?
-        if found is None:
-            for d in desk_states:
-                if point_in_box(cx, cy, d["box"]):
-                    found = d["name"]
-                    break
         if found is not None:
-            desks_with_phone.add(found)
+            people_with_phone.add(found)
             if labels is not None:
                 labels[found] = ph.get("label", "phone")   # "phone", "smartwatch", "earbuds"...
-    return desks_with_phone
+    return people_with_phone
 
 
 # ---------------- the main brain update ----------------
@@ -179,14 +165,14 @@ def make_alert(state, kind, message, now, alerts):
         return False
     state["last_alert"][kind] = now
     state["last_any_alert"] = now
-    alerts.append({"desk": state["name"], "kind": kind, "message": message, "time": now})
+    alerts.append({"person": state["name"], "kind": kind, "message": message, "time": now})
     return True
 
 
-def update_desk(state, person, phone_seen, now, device="phone"):
+def update_person(state, person, phone_seen, now, device="phone"):
     alerts = []
 
-    # ----- phone check (works even if the person is hidden) -----
+    # ----- phone check -----
     if phone_seen:
         state["phone_times"].append(now)
         state["last_device"] = device
@@ -276,14 +262,14 @@ def update_desk(state, person, phone_seen, now, device="phone"):
     return alerts
 
 
-def update_all(desk_states, people, phones, now):
-    matches = match_people_to_desks(people, desk_states)
+def update_all(people_states, people, phones, now):
+    matches = match_people(people, people_states, now)
     device_labels = {}
-    phone_desks = match_phones_to_desks(phones, desk_states, matches, device_labels)
+    phone_people = match_phones_to_people(phones, matches, device_labels)
     all_alerts = []
-    for d in desk_states:
-        person = matches.get(d["name"])
-        phone_seen = d["name"] in phone_desks
-        device = device_labels.get(d["name"], "phone")
-        all_alerts = all_alerts + update_desk(d, person, phone_seen, now, device)
+    for s in people_states:
+        person = matches.get(s["name"])
+        phone_seen = s["name"] in phone_people
+        device = device_labels.get(s["name"], "phone")
+        all_alerts = all_alerts + update_person(s, person, phone_seen, now, device)
     return all_alerts, matches

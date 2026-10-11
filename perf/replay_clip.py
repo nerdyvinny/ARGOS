@@ -27,7 +27,7 @@ def replay():
         times = json.load(f)
     cap = cv2.VideoCapture(CLIP)
     detector.load_models()
-    desk_states = None
+    people_states = []
     alerts = []
     frames = 0
     try:
@@ -35,19 +35,16 @@ def replay():
             ok, frame = cap.read()
             if not ok:
                 break
-            if desk_states is None:
-                h, w = frame.shape[:2]
-                desk_states = brain.load_desks(w, h)
             people, phones = detector.detect(frame)
-            new, matches = brain.update_all(desk_states, people, phones, t)
+            new, matches = brain.update_all(people_states, people, phones, t)
             for a in new:
-                alerts.append({"desk": a["desk"], "kind": a["kind"], "time": round(t, 2)})
+                alerts.append({"person": a["person"], "kind": a["kind"], "time": round(t, 2)})
             frames = frames + 1
     finally:
         cap.release()
     print("replayed", frames, "frames,", len(alerts), "alerts")
     for a in alerts:
-        print("  ", a["time"], a["desk"], a["kind"])
+        print("  ", a["time"], a["person"], a["kind"])
     return alerts
 
 
@@ -58,7 +55,7 @@ def compare(baseline, now):
     for b in baseline:
         found = None
         for a in unused:
-            if a["desk"] == b["desk"] and a["kind"] == b["kind"] and abs(a["time"] - b["time"]) <= TOLERANCE:
+            if a["person"] == b["person"] and a["kind"] == b["kind"] and abs(a["time"] - b["time"]) <= TOLERANCE:
                 found = a
                 break
         if found is None:

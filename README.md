@@ -301,5 +301,4 @@ Once it's connected, set `CAMERA_CONFIRM = True` in `rf_config.py`, and a radio 
 - Students facing away from the camera have no face points, so head turn can't be measured for them.
 - It flags, a human decides. Evidence pictures should be deleted after the test.
 
-## RF
 

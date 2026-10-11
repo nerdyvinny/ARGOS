@@ -84,6 +84,28 @@ It has two parts:
 
 It runs separately from the camera for now. The link between the two is a placeholder (see [Camera link](#camera-link-todo)).
 
+### Picture of what the radio does
+
+```
+   FRONT OF ROOM                                   STUDENTS' DESKS
+  +-------------+
+  |   CAMERA    |
+  +-------------+          ))) ))  )   <- phone sends a signal
+         |                 )) )          (up to the cell tower)
+     \ | /   ((( (( (  <-- the antenna catches it
+      \|/
+       Y  antenna  ------>  [ RTL-SDR ]  ------>  [ Laptop ]
+       |                    USB radio             measures power
+  ============                                    in each band
+  metal sheet
+  (blocks the back)
+
+  Empty room:  band power  ▁▁▁▁▁▁▁▁   = normal (baseline)
+  Phone in use: band power ▁▁▁█▇▁▁▁   = louder than normal -> ACTIVE
+```
+
+The antenna is like a radar that only listens: it never sends anything out. It just measures how loud each phone band is and checks whether it's louder than the empty room.
+
 ### How it works
 
 **Phones:**

@@ -105,3 +105,43 @@ class FollowPeopleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AlertCountTests(unittest.TestCase):
+    # alert_count replaced the old score: one count per alert event, cooldown stops repeats
+
+    def device_seen(self, state, start, seconds):
+        # a device in hand on every picture for `seconds`
+        alerts = []
+        now = start
+        while now < start + seconds:
+            alerts = alerts + brain.update_person(state, person(0.0), True, now, "device")
+            now = now + STEP
+        return alerts
+
+    def test_one_device_event_counts_once(self):
+        s = brain.new_person_state("Person 1", [0, 0, 200, 200])
+        alerts = self.device_seen(s, 0.0, 10)     # 10 s of the same device, inside one cooldown
+        self.assertEqual(kinds(alerts), ["device"])
+        self.assertEqual(s["alert_count"], 1)
+
+    def test_cooldown_then_a_new_event_counts_again(self):
+        s = brain.new_person_state("Person 1", [0, 0, 200, 200])
+        self.device_seen(s, 0.0, 5)
+        self.device_seen(s, 40.0, 5)              # after the 30 s cooldown: a second event
+        self.assertEqual(s["alert_count"], 2)
+
+    def test_merge_keeps_older_number_and_adds_counts(self):
+        older = brain.new_person_state("Person 1", [0, 0, 200, 200])
+        newer = brain.new_person_state("Person 4", [0, 0, 200, 200])
+        older["alert_count"] = 2
+        newer["alert_count"] = 3
+        states = [older, newer]
+        brain.merge_people(states, "Person 1", "Person 4")
+        self.assertEqual([s["name"] for s in states], ["Person 1"])
+        self.assertEqual(states[0]["alert_count"], 5)
+
+    def test_no_score_left_in_person_state(self):
+        s = brain.new_person_state("Person 1", [0, 0, 200, 200])
+        self.assertNotIn("score", s)
+        self.assertEqual(s["alert_count"], 0)

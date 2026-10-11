@@ -1,0 +1,298 @@
+diff --git a/rules/brain.py b/rules/brain.py
+index 83652ac..e8b41bc 100644
+--- a/rules/brain.py
++++ b/rules/brain.py
+@@ -96,10 +96,28 @@ def head_yaw(points):
+ 
+ # ---------------- following people / matching phones ----------------
+ 
++def match_people_by_track(people, people_states, now):
++    # The tracker (vision/tracker.py) already gave every person a session number,
++    # so "Person N" is simply track number N.
++    matches = {}
++    names = {s["name"]: s for s in people_states}
++    for p in people:
++        name = "Person " + str(p["track_id"])
++        if name not in names:
++            names[name] = new_person_state(name, p["box"])
++            people_states.append(names[name])
++        matches[name] = p
++        names[name]["box"] = p["box"]
++        names[name]["last_seen"] = now
++    return matches
++
++
+ def match_people(people, people_states, now):
+     # gives back a dictionary: person name -> detected person
+     # Each detected person goes to the remembered person whose last box overlaps it most.
+     # Someone nobody matches becomes a new "Person N".
++    if len(people) > 0 and all("track_id" in p for p in people):
++        return match_people_by_track(people, people_states, now)
+     matches = {}
+     taken = set()
+     pairs = []
+diff --git a/vision/detector.py b/vision/detector.py
+index 55bb853..b4525f6 100644
+--- a/vision/detector.py
++++ b/vision/detector.py
+@@ -17,14 +17,24 @@
+ #   Turn it off with WORLD_CHECK = False in settings/config.py.
+ 
+ import os
++import time
+ import numpy as np
+ from ultralytics import YOLO
+ from settings import config
++from vision.tracker import Tracker
+ 
+ # OpenVINO copies of the models run 2-3x faster on an Intel CPU (make them with tools\export_openvino.py).
+ # When a "<name>_openvino_model" folder is next to the .pt file we use it, otherwise the .pt file.
+ USE_OPENVINO = getattr(config, "USE_OPENVINO", True)
+ 
++# Following people between AI checks (see vision/tracker.py)
++TRACKING = getattr(config, "TRACKING", True)
++DETECT_EVERY = getattr(config, "DETECT_EVERY", 4)        # the AI looks at every 4th picture
++LOW_PERSON_CONFIDENCE = 0.25    # unsure people may only keep an existing number, never start one
++KEEP_LOST_SECONDS = 1.0         # someone the AI missed stays on screen this long (flow-moved box)
++tracker = None
++frame_count = 0
++
+ pose_model = None
+ object_model = None
+ world_model = None
+@@ -63,6 +73,11 @@ def load_models():
+         world_model = YOLO(world_file, task="detect")
+         if world_file == WORLD_MODEL:
+             world_model.set_classes(list(WORLD_WORDS.keys()))   # the OpenVINO copy already has the words
++    # one practice run so the first real picture isn't slow (OpenVINO builds its program on first use)
++    blank = np.zeros((config.IMAGE_SIZE, config.IMAGE_SIZE, 3), dtype=np.uint8)
++    for m in [pose_model, object_model, world_model]:
++        if m is not None:
++            m(blank, imgsz=config.IMAGE_SIZE, verbose=False)
+     print("Models loaded")
+ 
+ 
+@@ -130,9 +145,11 @@ def remove_doubles(things):
+     return kept
+ 
+ 
+-def find_people(tiles):
++def find_people(tiles, conf=None):
++    if conf is None:
++        conf = config.PERSON_CONFIDENCE
+     images = [t[2] for t in tiles]
+-    results = pose_model(images, conf=config.PERSON_CONFIDENCE, imgsz=config.IMAGE_SIZE, verbose=False)
++    results = pose_model(images, conf=conf, imgsz=config.IMAGE_SIZE, verbose=False)
+ 
+     people = []
+     for i in range(len(results)):
+@@ -297,12 +314,31 @@ def drop_fake_phones(phones, not_devices):
+     return kept
+ 
+ 
+-def detect(frame):
++def detect_all(frame, people_conf=None):
+     tiles = make_tiles(frame)
+-    people = find_people(tiles)
++    people = find_people(tiles, people_conf)
+     phones = find_phones(tiles)
+     if WORLD_CHECK and world_model is not None:
+         devices, not_devices = find_world_things(frame, tiles, people)
+         phones = drop_fake_phones(phones, not_devices) + devices
+         phones = remove_doubles_per_label(phones)
+     return people, phones
++
++
++def detect(frame, now=None):
++    # TRACKING on: the AI looks every DETECT_EVERY pictures; in between, the tracker moves
++    # everyone's box by optical flow (cheap). People keep their number through short misses.
++    global tracker, frame_count
++    if not TRACKING:
++        return detect_all(frame)
++    if now is None:
++        now = time.time()
++    if tracker is None:
++        tracker = Tracker(config.PERSON_CONFIDENCE, config.FORGET_PERSON_SECONDS)
++    tracker.predict(frame, now)
++    phones = []
++    if frame_count % DETECT_EVERY == 0:
++        found, phones = detect_all(frame, LOW_PERSON_CONFIDENCE)
++        tracker.update(found, now)
++    frame_count = frame_count + 1
++    return tracker.current(now, KEEP_LOST_SECONDS), phones
+diff --git a/vision/tracker.py b/vision/tracker.py
+new file mode 100644
+index 0000000..2207ca3
+--- /dev/null
++++ b/vision/tracker.py
+@@ -0,0 +1,170 @@
++# Follows people from one picture to the next, also on pictures where the AI did not look.
++#
++# Big idea (from the SORT / ByteTrack tracking videos):
++#   - Every picture: move each person's box by how the pixels inside it moved
++#     (optical flow). This is cheap, so the AI does not have to run on every picture.
++#   - When the AI did look: match what it found to the boxes we already follow
++#     (best overlap first). Sure detections first, unsure ones only to keep an existing person.
++#   - Someone the AI misses keeps their number for a while (hidden behind someone,
++#     bending down), so they get the SAME number back when they show up near the same spot.
++#
++# The numbers are only labels for this session. Nothing about faces is stored.
++
++import cv2
++import numpy as np
++
++FLOW_WIDTH = 640           # optical flow runs on a small copy of the picture (fast)
++FLOW_POINTS = 25           # corner points followed inside each box
++FLOW_MAX_LOST = 1.0        # seconds: stop moving a box by flow when the AI hasn't seen it for this long
++MATCH_IOU = 0.2            # boxes must overlap at least this much to be the same person
++REFIND_DISTANCE = 1.0      # a lost person can be found again this many box-heights from where they were
++
++
++def box_area(b):
++    return max(0, b[2] - b[0]) * max(0, b[3] - b[1])
++
++
++def iou(a, b):
++    x1, y1, x2, y2 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
++    inter = box_area([x1, y1, x2, y2])
++    union = box_area(a) + box_area(b) - inter
++    if union <= 0:
++        return 0
++    return inter / union
++
++
++def center(b):
++    return (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
++
++
++def inside_any(b, rects):
++    if rects is None:
++        return True
++    cx, cy = center(b)
++    for r in rects:
++        if r[0] <= cx <= r[2] and r[1] <= cy <= r[3]:
++            return True
++    return False
++
++
++class Tracker:
++    def __init__(self, new_confidence, forget_seconds):
++        self.new_confidence = new_confidence   # a detection this sure can start a new person
++        self.forget_seconds = forget_seconds   # unseen this long = the number is retired
++        self.tracks = []
++        self.next_id = 1
++        self.prev_gray = None
++        self.scale = 1.0
++
++    # ---------- every picture ----------
++
++    def predict(self, frame, now):
++        # move every recently seen box with optical flow
++        h, w = frame.shape[:2]
++        self.scale = FLOW_WIDTH / w
++        small = cv2.resize(frame, (FLOW_WIDTH, int(h * self.scale)))
++        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
++        if self.prev_gray is not None:
++            for t in self.tracks:
++                if t["misses"] == 0 or now - t["last_seen"] <= FLOW_MAX_LOST:
++                    self.flow_move(t, self.prev_gray, gray)
++        self.prev_gray = gray
++
++    def flow_move(self, track, old_gray, new_gray):
++        s = self.scale
++        b = [v * s for v in track["box"]]
++        x1, y1 = max(0, int(b[0])), max(0, int(b[1]))
++        x2, y2 = min(old_gray.shape[1], int(b[2])), min(old_gray.shape[0], int(b[3]))
++        if x2 - x1 < 8 or y2 - y1 < 8:
++            return
++        mask = np.zeros_like(old_gray)
++        mask[y1:y2, x1:x2] = 255
++        pts = cv2.goodFeaturesToTrack(old_gray, FLOW_POINTS, 0.01, 4, mask=mask)
++        if pts is None or len(pts) < 4:
++            return
++        new_pts, status, err = cv2.calcOpticalFlowPyrLK(old_gray, new_gray, pts, None,
++                                                        winSize=(21, 21), maxLevel=3)
++        good = status.reshape(-1) == 1
++        if good.sum() < 4:
++            return
++        moves = (new_pts[good] - pts[good]).reshape(-1, 2)
++        dx = float(np.median(moves[:, 0])) / s
++        dy = float(np.median(moves[:, 1])) / s
++        track["box"] = [track["box"][0] + dx, track["box"][1] + dy, track["box"][2] + dx, track["box"][3] + dy]
++        for p in track["points"]:
++            p[0] = p[0] + dx
++            p[1] = p[1] + dy
++
++    # ---------- when the AI looked ----------
++
++    def update(self, people, now, searched=None):
++        # people: detections from the AI. searched: the parts of the picture the AI looked at
++        # (None = the whole picture). Read the result with current().
++        sure = [p for p in people if p["conf"] >= self.new_confidence]
++        unsure = [p for p in people if p["conf"] < self.new_confidence]
++        free_tracks = [t for t in self.tracks if inside_any(t["box"], searched)]
++        left = self.match(sure, free_tracks, now, allow_refind=True)
++        # unsure detections may only keep someone we already follow (ByteTrack's second pass)
++        free_tracks = [t for t in free_tracks if t["last_seen"] != now]
++        self.match(unsure, free_tracks, now, allow_refind=False)
++        for t in free_tracks:
++            if t["last_seen"] != now:
++                t["misses"] = t["misses"] + 1   # the AI looked here and did not find them
++        for p in left:
++            self.add_track(p, now)
++        self.tracks = [t for t in self.tracks if now - t["last_seen"] <= self.forget_seconds]
++
++    def match(self, dets, tracks, now, allow_refind):
++        pairs = []
++        for i in range(len(dets)):
++            d = dets[i]["box"]
++            for t in tracks:
++                score = iou(d, t["box"])
++                if score < MATCH_IOU and allow_refind and now - t["last_seen"] > 0:
++                    # lost for a moment: allow a match near where they were, if the size is similar
++                    tx, ty = center(t["box"])
++                    dx, dy = center(d)
++                    th = t["box"][3] - t["box"][1]
++                    dh = d[3] - d[1]
++                    near = ((tx - dx) ** 2 + (ty - dy) ** 2) ** 0.5 <= REFIND_DISTANCE * th
++                    similar = th > 0 and 0.5 <= dh / th <= 2.0
++                    if near and similar:
++                        score = MATCH_IOU * 0.5   # weaker than any real overlap
++                if score >= MATCH_IOU * 0.5:
++                    pairs.append((score, i, t["id"]))
++        pairs.sort(reverse=True)
++        used_d, used_t = set(), set()
++        by_id = {t["id"]: t for t in tracks}
++        for score, i, tid in pairs:
++            if i in used_d or tid in used_t:
++                continue
++            used_d.add(i)
++            used_t.add(tid)
++            self.refresh(by_id[tid], dets[i], now)
++        return [dets[i] for i in range(len(dets)) if i not in used_d]
++
++    def refresh(self, track, det, now):
++        track["box"] = list(det["box"])
++        track["points"] = [list(p) for p in det["points"]]
++        track["conf"] = det["conf"]
++        track["last_seen"] = now
++        track["hits"] = track["hits"] + 1
++        track["misses"] = 0
++
++    def add_track(self, det, now):
++        self.tracks.append({"id": self.next_id, "box": list(det["box"]),
++                            "points": [list(p) for p in det["points"]],
++                            "conf": det["conf"], "last_seen": now, "hits": 1, "misses": 0})
++        self.next_id = self.next_id + 1
++
++    # ---------- result ----------
++
++    def current(self, now, max_age):
++        # people to hand to the brain: found by the last AI check, or missed by only one check
++        # and seen in the last max_age seconds (a slow AI check must not hide everyone)
++        out = []
++        for t in self.tracks:
++            if t["misses"] == 0 or (t["misses"] <= 1 and now - t["last_seen"] <= max_age):
++                out.append({"box": list(t["box"]), "conf": t["conf"],
++                            "points": [list(p) for p in t["points"]], "track_id": t["id"]})
++        return out

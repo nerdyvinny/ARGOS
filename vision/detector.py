@@ -1,11 +1,20 @@
 # This file runs the AI models on a picture.
 # It gives back:
 #   people = list of {"box": [x1,y1,x2,y2], "conf": 0.9, "points": [[x,y,conf], ... 17 points]}
-#   phones = list of {"box": [x1,y1,x2,y2], "conf": 0.5}
+#   phones = list of {"box": [x1,y1,x2,y2], "conf": 0.5, "label": "phone"}
+#            (label can also be "smartwatch", "earbuds" or "headphones")
 #
 # Body points (from YOLO pose, COCO order):
 #   0 nose, 1 left eye, 2 right eye, 3 left ear, 4 right ear,
 #   5 left shoulder, 6 right shoulder, ... 9 left wrist, 10 right wrist ...
+#
+# Devices COCO doesn't know (smartwatch, earbuds, headphones):
+#   We use YOLO-World, a YOLO model you can give any list of words to look for.
+#   It looks at every tile, and also at a close-up square around each person's
+#   head and wrists (earbuds and watches are tiny, close-ups help a lot).
+#   It also looks for name tags / ID cards, so a name tag the phone model
+#   thinks is a phone gets thrown out.
+#   Turn it off with WORLD_CHECK = False in settings/config.py.
 
 import numpy as np
 from ultralytics import YOLO
@@ -13,13 +22,32 @@ from settings import config
 
 pose_model = None
 object_model = None
+world_model = None
+
+# YOLO-World settings (you can override any of these in settings/config.py)
+WORLD_CHECK = getattr(config, "WORLD_CHECK", True)
+WORLD_MODEL = getattr(config, "WORLD_MODEL", "yolov8s-worldv2.pt")
+WORLD_CONFIDENCE = getattr(config, "WORLD_CONFIDENCE", 0.15)   # YOLO-World scores are low, 0.15 is normal
+# word to look for -> label we give it. None = not a device (used to throw out fake phones)
+WORLD_WORDS = {
+    "smartwatch": "smartwatch",
+    "wireless earbuds": "earbuds",
+    "headphones": "headphones",
+    "name tag": None,
+    "id card": None,
+}
+HEAD_POINTS = [0, 1, 2, 3, 4]   # nose, eyes, ears
+WRISTS = [9, 10]
 
 
 def load_models():
-    global pose_model, object_model
+    global pose_model, object_model, world_model
     print("Loading AI models (first time it downloads them)...")
     pose_model = YOLO(config.POSE_MODEL)
     object_model = YOLO(config.OBJECT_MODEL)
+    if WORLD_CHECK:
+        world_model = YOLO(WORLD_MODEL)
+        world_model.set_classes(list(WORLD_WORDS.keys()))
     print("Models loaded")
 
 
@@ -140,13 +168,126 @@ def find_phones(tiles):
         for j in range(len(boxes)):
             b = boxes[j]
             box = [float(b[0] + ox), float(b[1] + oy), float(b[2] + ox), float(b[3] + oy)]
-            phones.append({"box": box, "conf": float(confs[j]), "tile": i})
+            phones.append({"box": box, "conf": float(confs[j]), "tile": i, "label": "phone"})
 
     return remove_doubles(phones)
+
+
+def remove_doubles_per_label(things):
+    # Like remove_doubles, but only compares boxes with the same label.
+    # So a phone held next to your headphones is NOT thrown away as a "double".
+    groups = {}
+    for t in things:
+        label = t.get("label", "phone")
+        if label not in groups:
+            groups[label] = []
+        groups[label].append(t)
+    kept = []
+    for label in groups:
+        kept = kept + remove_doubles(groups[label])
+    return kept
+
+
+def close_up_squares(people):
+    # a square around each head and each wrist, in full-picture numbers
+    squares = []
+    for p in people:
+        b = p["box"]
+        person_w = b[2] - b[0]
+        pts = p["points"]
+
+        head = [pts[k] for k in HEAD_POINTS if k < len(pts) and pts[k][2] >= config.KEYPOINT_CONFIDENCE]
+        if len(head) >= 2:
+            xs = [q[0] for q in head]
+            ys = [q[1] for q in head]
+            side = max((max(xs) - min(xs)) * 2.5, person_w * 0.45)
+            cx = sum(xs) / len(xs)
+            cy = sum(ys) / len(ys)
+            squares.append([cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2])
+
+        for k in WRISTS:
+            if k < len(pts) and pts[k][2] >= config.KEYPOINT_CONFIDENCE:
+                side = person_w * 0.4
+                x, y = pts[k][0], pts[k][1]
+                squares.append([x - side / 2, y - side / 2, x + side / 2, y + side / 2])
+    return squares
+
+
+def cut_square(frame, sq):
+    # cut a square out of the full picture (the part inside the picture)
+    h, w = frame.shape[:2]
+    x1 = max(0, int(sq[0]))
+    y1 = max(0, int(sq[1]))
+    x2 = min(w, int(sq[2]))
+    y2 = min(h, int(sq[3]))
+    if x2 - x1 < 16 or y2 - y1 < 16:
+        return None, 0, 0
+    return np.ascontiguousarray(frame[y1:y2, x1:x2]), x1, y1
+
+
+def find_world_things(frame, tiles, people):
+    # runs YOLO-World on all tiles + close-ups in one go
+    # gives back (devices, not_devices): devices have a label, not_devices are name tags etc.
+    images = []
+    offsets = []
+    tile_ids = []
+    for i in range(len(tiles)):
+        images.append(tiles[i][2])
+        offsets.append((tiles[i][0], tiles[i][1]))
+        tile_ids.append(i)
+    for sq in close_up_squares(people):
+        piece, ox, oy = cut_square(frame, sq)
+        if piece is None:
+            continue
+        images.append(piece)
+        offsets.append((ox, oy))
+        tile_ids.append(None)   # close-ups are not tiles
+
+    results = world_model(images, conf=WORLD_CONFIDENCE, imgsz=config.IMAGE_SIZE, verbose=False)
+
+    words = list(WORLD_WORDS.keys())
+    devices = []
+    not_devices = []
+    for i in range(len(results)):
+        r = results[i]
+        ox, oy = offsets[i]
+        if r.boxes is None or len(r.boxes) == 0:
+            continue
+        boxes = r.boxes.xyxy.cpu().numpy()
+        confs = r.boxes.conf.cpu().numpy()
+        classes = r.boxes.cls.cpu().numpy()
+        for j in range(len(boxes)):
+            b = boxes[j]
+            box = [float(b[0] + ox), float(b[1] + oy), float(b[2] + ox), float(b[3] + oy)]
+            label = WORLD_WORDS[words[int(classes[j])]]
+            thing = {"box": box, "conf": float(confs[j]), "tile": tile_ids[i], "label": label}
+            if label is None:
+                not_devices.append(thing)
+            else:
+                devices.append(thing)
+    return devices, not_devices
+
+
+def drop_fake_phones(phones, not_devices):
+    # a "phone" that is really a name tag / ID card: YOLO-World is surer it's a tag
+    kept = []
+    for ph in phones:
+        fake = False
+        for nd in not_devices:
+            if overlap_of_smaller(ph["box"], nd["box"]) > 0.6 and nd["conf"] >= ph["conf"]:
+                fake = True
+                break
+        if not fake:
+            kept.append(ph)
+    return kept
 
 
 def detect(frame):
     tiles = make_tiles(frame)
     people = find_people(tiles)
     phones = find_phones(tiles)
+    if WORLD_CHECK and world_model is not None:
+        devices, not_devices = find_world_things(frame, tiles, people)
+        phones = drop_fake_phones(phones, not_devices) + devices
+        phones = remove_doubles_per_label(phones)
     return people, phones

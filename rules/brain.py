@@ -140,7 +140,7 @@ def match_people_to_desks(people, desk_states):
     return matches
 
 
-def match_phones_to_desks(phones, desk_states, matches):
+def match_phones_to_desks(phones, desk_states, matches, labels=None):
     # gives back a set of desk names that have a phone
     desks_with_phone = set()
     for ph in phones:
@@ -165,6 +165,8 @@ def match_phones_to_desks(phones, desk_states, matches):
                     break
         if found is not None:
             desks_with_phone.add(found)
+            if labels is not None:
+                labels[found] = ph.get("label", "phone")   # "phone", "smartwatch", "earbuds"...
     return desks_with_phone
 
 
@@ -181,15 +183,16 @@ def make_alert(state, kind, message, now, alerts):
     return True
 
 
-def update_desk(state, person, phone_seen, now):
+def update_desk(state, person, phone_seen, now, device="phone"):
     alerts = []
 
     # ----- phone check (works even if the person is hidden) -----
     if phone_seen:
         state["phone_times"].append(now)
+        state["last_device"] = device
     state["phone_times"] = [t for t in state["phone_times"] if now - t <= config.PHONE_WINDOW_SECONDS]
     if len(state["phone_times"]) >= config.PHONE_MIN_HITS:
-        if make_alert(state, "phone", "Phone seen at " + state["name"], now, alerts):
+        if make_alert(state, "phone", state.get("last_device", "phone").capitalize() + " seen at " + state["name"], now, alerts):
             state["total_phone_alerts"] = state["total_phone_alerts"] + 1
 
     # ----- head turning check -----
@@ -275,10 +278,12 @@ def update_desk(state, person, phone_seen, now):
 
 def update_all(desk_states, people, phones, now):
     matches = match_people_to_desks(people, desk_states)
-    phone_desks = match_phones_to_desks(phones, desk_states, matches)
+    device_labels = {}
+    phone_desks = match_phones_to_desks(phones, desk_states, matches, device_labels)
     all_alerts = []
     for d in desk_states:
         person = matches.get(d["name"])
         phone_seen = d["name"] in phone_desks
-        all_alerts = all_alerts + update_desk(d, person, phone_seen, now)
+        device = device_labels.get(d["name"], "phone")
+        all_alerts = all_alerts + update_desk(d, person, phone_seen, now, device)
     return all_alerts, matches

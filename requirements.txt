@@ -2,3 +2,4 @@ ultralytics>=8.3.0
 opencv-python
 flask
 numpy
+git+https://github.com/ultralytics/CLIP.git   # needed by YOLO-World (smartwatch / earbuds / headphones)
